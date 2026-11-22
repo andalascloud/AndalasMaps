@@ -43,7 +43,7 @@ std::string RemoveAddressDetails(std::string const & query)
 {
   // Bound input size and compact separator runs before regex matching to avoid backtracking
   // over long runs in pasted text. Ordinary queries are still returned unchanged.
-  if (query.size() > 4096)
+  if (query.size() > 4096 || query.find_first_of("0123456789") == std::string::npos)
     return query;
   std::string compact;
   compact.reserve(query.size());
