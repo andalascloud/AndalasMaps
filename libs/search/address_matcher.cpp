@@ -189,10 +189,6 @@ std::optional<ParsedAddress> ParseAddress(std::string_view value)
       }
     }
   }
-  auto const tokens = Tokenize(value);
-  if (tokens.size() < 2)
-    return {};
-
   size_t firstNonSpace = value.find_first_not_of(" \t\r\n");
   if (firstNonSpace == std::string_view::npos)
     return {};
@@ -214,7 +210,8 @@ std::optional<ParsedAddress> ParseAddress(std::string_view value)
   address.m_houseIdentifier = house->second;
   address.m_street = std::string(value.substr(streetStart));
   address.m_streetTokens = Tokenize(address.m_street);
-  if (address.m_streetTokens.size() == 1 && IsStreetSynonym(strings::MakeUniString(address.m_streetTokens.front())))
+  if (address.m_streetTokens.empty() ||
+      (address.m_streetTokens.size() == 1 && IsStreetSynonym(strings::MakeUniString(address.m_streetTokens.front()))))
     return {};
   return address;
 }
@@ -285,8 +282,19 @@ bool StreetMatchesQuery(std::vector<std::string> const & queryTokens, std::vecto
   return false;
 }
 
+// A missing value indicates a malformed constraint. An empty list leaves the query unconstrained.
+std::optional<std::vector<std::string>> ExpectedStreetTokens(std::string const & street)
+{
+  if (street.empty())
+    return std::vector<std::string>{};
+  auto parsed = ParseAddress(RemoveAddressDetails(street));
+  if (!parsed)
+    return {};
+  return std::move(parsed->m_streetTokens);
+}
+
 std::optional<Candidate> ParseCandidate(size_t index, Result const & result, AddressQuery const & requested,
-                                        std::string const & expectedStreet = {})
+                                        std::vector<std::string> const & expectedStreet)
 {
   if (!result.HasPoint() || result.IsSuggest())
     return {};
@@ -303,14 +311,10 @@ std::optional<Candidate> ParseCandidate(size_t index, Result const & result, Add
     auto normalized = Tokenize(token);
     addressTokens.insert(addressTokens.end(), normalized.begin(), normalized.end());
   }
-  auto const expected =
-      expectedStreet.empty() ? std::optional<ParsedAddress>{} : ParseAddress(RemoveAddressDetails(expectedStreet));
-  if (!expectedStreet.empty() && !expected)
-    return {};
   auto const matchesStreet = [&](std::string const & name)
   {
     auto const streetTokens = Tokenize(name);
-    return !streetTokens.empty() && (!expected || StreetMatchesQuery(expected->m_streetTokens, streetTokens, {})) &&
+    return !streetTokens.empty() && (expectedStreet.empty() || StreetMatchesQuery(expectedStreet, streetTokens, {})) &&
            StreetMatchesQuery(requested.m_streetAndLocalityTokens, streetTokens, addressTokens);
   };
   if (!matchesStreet(identity->m_street) &&
@@ -327,11 +331,25 @@ std::optional<Candidate> ParseCandidate(size_t index, Result const & result, Add
   return Candidate{index, house->first, house->second};
 }
 
+AddressResultMatch ClassifyAddressResult(AddressQuery const & query, Result const & result,
+                                         std::vector<std::string> const & expectedStreet)
+{
+  auto const candidate = ParseCandidate(0, result, query, expectedStreet);
+  if (!candidate)
+    return AddressResultMatch::None;
+  if (candidate->m_houseIdentifier != query.m_houseIdentifier)
+    return AddressResultMatch::Nearby;
+  if (result.GetResultType() == Result::Type::Feature &&
+      ftypes::IsAddressInterpolChecker::Instance()(result.GetFeatureType()))
+    return AddressResultMatch::Interpolated;
+  return AddressResultMatch::Exact;
+}
+
 }  // namespace
 
 std::optional<AddressQuery> ParseAddressQuery(std::string const & query)
 {
-  if (query.size() > 4096)
+  if (query.size() > 4096 || query.find_first_of("0123456789") == std::string::npos)
     return {};
   auto const prepared = RemoveAddressDetails(query);
   auto parsed = ParseAddress(prepared);
@@ -341,6 +359,8 @@ std::optional<AddressQuery> ParseAddressQuery(std::string const & query)
   // context is eligible: numbered streets and compound house identifiers stay untouched.
   auto const comma = prepared.find(',');
   auto const streetComponent = comma == std::string::npos ? std::nullopt : ParseAddress(prepared.substr(0, comma));
+  if (comma == std::string::npos)
+    return AddressQuery{parsed->m_houseNumber, std::move(parsed->m_houseIdentifier), std::move(parsed->m_streetTokens)};
   auto const streetSize = Tokenize(parsed->m_street).size();
   auto const secondComma = comma == std::string::npos ? comma : prepared.find(',', comma + 1);
   auto const contextStart = streetComponent                  ? comma + 1
@@ -450,13 +470,14 @@ bool IsAddressQuery(std::string const & query)
 Results RankAddressResults(std::string const & query, Results const & results, std::string const & expectedStreet)
 {
   auto const requestedAddress = ParseAddressQuery(query);
-  if (!requestedAddress)
+  auto const expected = ExpectedStreetTokens(expectedStreet);
+  if (!requestedAddress || !expected)
     return results;
 
   std::vector<Candidate> candidates;
   for (size_t i = 0; i < results.GetCount(); ++i)
   {
-    auto candidate = ParseCandidate(i, results[i], *requestedAddress, expectedStreet);
+    auto candidate = ParseCandidate(i, results[i], *requestedAddress, *expected);
     if (candidate)
       candidates.push_back(std::move(*candidate));
   }
@@ -514,15 +535,8 @@ AddressResultMatch GetAddressResultMatch(std::string const & query, Result const
 AddressResultMatch GetAddressResultMatch(AddressQuery const & query, Result const & result,
                                          std::string const & expectedStreet)
 {
-  auto const candidate = ParseCandidate(0, result, query, expectedStreet);
-  if (!candidate)
-    return AddressResultMatch::None;
-  if (candidate->m_houseIdentifier != query.m_houseIdentifier)
-    return AddressResultMatch::Nearby;
-  if (result.GetResultType() == Result::Type::Feature &&
-      ftypes::IsAddressInterpolChecker::Instance()(result.GetFeatureType()))
-    return AddressResultMatch::Interpolated;
-  return AddressResultMatch::Exact;
+  auto const expected = ExpectedStreetTokens(expectedStreet);
+  return expected ? ClassifyAddressResult(query, result, *expected) : AddressResultMatch::None;
 }
 
 bool IsAddressResultMatchingQuery(std::string const & query, Result const & result, std::string const & expectedStreet)
@@ -535,7 +549,8 @@ Result const * FindUniqueAddressResult(std::string const & query, Results const 
                                        std::string const & expectedStreet)
 {
   auto const parsed = ParseAddressQuery(query);
-  if (!parsed)
+  auto const expected = ExpectedStreetTokens(expectedStreet);
+  if (!parsed || !expected)
     return nullptr;
   Result const * match = nullptr;
   auto bestKind = AddressResultMatch::None;
@@ -543,7 +558,7 @@ Result const * FindUniqueAddressResult(std::string const & query, Results const 
   bool ambiguous = false;
   for (auto const & result : results)
   {
-    auto const kind = GetAddressResultMatch(*parsed, result, expectedStreet);
+    auto const kind = ClassifyAddressResult(*parsed, result, *expected);
     if (kind != AddressResultMatch::Exact && kind != AddressResultMatch::Interpolated)
       continue;
     bool const isAddressPoint = result.GetResultType() == Result::Type::Feature &&
@@ -566,7 +581,7 @@ Result const * FindUniqueAddressResult(std::string const & query, Results const 
     // A shop inside the addressed building must not displace its house-number point. A matching
     // POI elsewhere is still a genuinely different location, not grounds to guess a residence.
     for (auto const & result : results)
-      if (GetAddressResultMatch(*parsed, result, expectedStreet) == bestKind &&
+      if (ClassifyAddressResult(*parsed, result, *expected) == bestKind &&
           mercator::DistanceOnEarth(match->GetFeatureCenter(), result.GetFeatureCenter()) >
               kAssociatedAddressPoiRadiusMeters)
         return nullptr;
