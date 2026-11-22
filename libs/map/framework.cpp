@@ -2526,8 +2526,9 @@ place_page::Info Framework::BuildPlacePageInfo(place_page::BuildInfo const & bui
     {
       double constexpr kEps = 1e-7;
       auto const rect = df::TapInfo::GetPreciseTapRect(outInfo.GetMercator(), kEps);
-      UserMark const * mark = GetBookmarkManager().FindNearestUserMark([&rect](UserMark::Type) { return rect; },
-                                                                       [](UserMark::Type) { return true; });
+      UserMark const * mark = GetBookmarkManager().FindNearestUserMark(
+          [&rect](UserMark::Type) { return rect; }, [](UserMark::Type) { return true; },
+          buildInfo.m_source == place_page::BuildInfo::Source::User ? std::optional(GetDrawScale()) : std::nullopt);
       // On a stale track mark keep the feature info filled above and fall back to the POI selection.
       if (mark && FillUserMarkInfo(mark, outInfo))
       {
@@ -2682,7 +2683,9 @@ UserMark const * Framework::FindUserMarkInTapPosition(place_page::BuildInfo cons
       return df::TapInfo::GetRoutingPointTapRect(buildInfo.m_mercator, m_currentModelView);
 
     return df::TapInfo::GetDefaultTapRect(buildInfo.m_mercator, m_currentModelView);
-  }, [](UserMark::Type type) { return type == UserMark::Type::TRACK_INFO || type == UserMark::Type::TRACK_SELECTION; });
+  }, [](UserMark::Type type) {
+    return type == UserMark::Type::TRACK_INFO || type == UserMark::Type::TRACK_SELECTION;
+  }, buildInfo.m_source == place_page::BuildInfo::Source::User ? std::optional(GetDrawScale()) : std::nullopt);
   return mark;
 }
 

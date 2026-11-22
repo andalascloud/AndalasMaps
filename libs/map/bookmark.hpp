@@ -76,23 +76,25 @@ public:
 
   kml::MarkGroupId GetGroupId() const override;
 
-  // Imported contacts use the POI presentation and are useful from the same zoom as other POIs.
-  // The icon appears at 14; the caption stays at 15.
-  int GetMinZoom() const override { return HasPoiPresentation() && m_data.m_minZoom > 14 ? 14 : m_data.m_minZoom; }
+  int GetMinZoom() const override;
   int GetMinTitleZoom() const override { return HasPoiPresentation() ? 15 : GetMinZoom(); }
 
   // Whether m_data.m_properties suitable to fill "Key info" part of placepage.
   bool CanFillPlacePageMetadata() const;
 
-  void Attach(kml::MarkGroupId groupId);
+  bool HasContactPresentation() const;
+  void Attach(kml::MarkGroupId groupId, bool isContactCategory);
   void Detach();
 
 private:
+  void OverridePoiPresentation();
+  bool HasStoredContactImage() const;
   bool HasPoiPresentation() const;
   drape_ptr<df::UserPointMark::SymbolNameZoomInfo> GetCustomSymbolNames() const;
 
   kml::BookmarkData m_data;
   kml::MarkGroupId m_groupId;
+  bool m_isContactCategory = false;
   search::ReverseGeocoder::RegionAddress m_address;
 };
 

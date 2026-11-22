@@ -414,37 +414,13 @@ JNIEXPORT jboolean JNICALL Java_app_organicmaps_sdk_bookmarks_data_BookmarkManag
                                                                                                            jlong bmkId)
 {
   auto const * bookmark = frm()->GetBookmarkManager().GetBookmark(static_cast<kml::MarkId>(bmkId));
-  if (!bookmark)
-    return JNI_FALSE;
-
-  auto const groupId = bookmark->GetGroupId();
-  if (!BookmarkManager::IsBookmarkCategory(groupId))
-    return JNI_FALSE;
-  auto const & categoryProperties = frm()->GetBookmarkManager().GetCategoryData(groupId).m_properties;
-  auto const source = categoryProperties.find("om:import:source");
-  if (source == categoryProperties.end() || source->second != "android-contacts")
-    return JNI_FALSE;
-
-  auto const & properties = bookmark->GetData().m_properties;
-  if (properties.contains("CustomImageOverride"))
-    return JNI_FALSE;
-  auto const style = properties.find("CustomImageStyle");
-  if (style == properties.end() || style->second != "poi")
-    return JNI_FALSE;
-  auto const image = properties.find("CustomImage");
-  return (image == properties.end() || image->second.find("contact-") != std::string::npos) ? JNI_TRUE : JNI_FALSE;
+  return bookmark && bookmark->HasContactPresentation();
 }
 
 JNIEXPORT jboolean JNICALL
 Java_app_organicmaps_sdk_bookmarks_data_BookmarkManager_nativeIsContactCategory(JNIEnv *, jobject, jlong categoryId)
 {
-  auto const groupId = static_cast<kml::MarkGroupId>(categoryId);
-  if (!BookmarkManager::IsBookmarkCategory(groupId))
-    return JNI_FALSE;
-
-  auto const & properties = frm()->GetBookmarkManager().GetCategoryData(groupId).m_properties;
-  auto const it = properties.find("om:import:source");
-  return (it != properties.end() && it->second == "android-contacts") ? JNI_TRUE : JNI_FALSE;
+  return frm()->GetBookmarkManager().IsContactCategory(static_cast<kml::MarkGroupId>(categoryId));
 }
 
 JNIEXPORT jobject Java_app_organicmaps_sdk_bookmarks_data_BookmarkManager_nativeGetTrack(JNIEnv * env, jobject,
@@ -679,8 +655,7 @@ JNIEXPORT jlongArray JNICALL Java_app_organicmaps_sdk_bookmarks_data_BookmarkMan
     jni::ScopedLocalRef<jstring> address(env, static_cast<jstring>(env->GetObjectArrayElement(addresses, i)));
     entries.push_back({key.get() ? jni::ToNativeString(env, key.get()) : "",
                        name.get() ? jni::ToNativeString(env, name.get()) : "",
-                       address.get() ? jni::ToNativeString(env, address.get()) : "", lat[i], lon[i],
-                       "14,contact-s;15,contact-m", true});
+                       address.get() ? jni::ToNativeString(env, address.get()) : "", lat[i], lon[i]});
     entries.back().m_requireSourceCategory = true;
     jni::ScopedLocalRef<jstring> fingerprint(env,
                                              static_cast<jstring>(env->GetObjectArrayElement(sourceFingerprints, i)));

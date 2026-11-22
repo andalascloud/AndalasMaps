@@ -333,11 +333,7 @@ JNIEXPORT jboolean Java_app_organicmaps_sdk_search_SearchEngine_nativeRunSearchI
                                                                                            jlong catId, jlong timestamp)
 {
   if (static_cast<kml::MarkGroupId>(catId) == kml::kInvalidMarkGroupId)
-  {
-    auto & manager = g_framework->NativeFramework()->GetBookmarkManager();
-    for (auto const category : manager.GetSortedBmGroupIdList())
-      manager.PrepareForSearch(category);
-  }
+    g_framework->NativeFramework()->GetBookmarkManager().PrepareForSearch(kml::kInvalidMarkGroupId);
   search::BookmarksSearchParams params{
       jni::ToNativeString(env, query), static_cast<kml::MarkGroupId>(catId),
       std::bind(&OnBookmarksSearchResults, std::placeholders::_1, std::placeholders::_2, timestamp)};

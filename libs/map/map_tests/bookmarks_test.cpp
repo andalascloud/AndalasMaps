@@ -3463,7 +3463,7 @@ UNIT_TEST(BookmarkContactImportPresentationDoesNotCountAsALocalEdit)
 {
   BookmarkManager manager(BM_CALLBACKS);
   manager.EnableTestMode(true);
-  BookmarkImportEntry entry{"person", "Person", "8877 Wright St", 49.1, -122.6, "14,contact-s;15,contact-m", true};
+  BookmarkImportEntry entry{"person", "Person", "8877 Wright St", 49.1, -122.6};
   entry.m_requireSourceCategory = true;
   auto result = ImportBookmarks(manager, "android-contacts", "Contacts", {entry});
   TEST_EQUAL(result.m_added, 1, ());
@@ -3727,12 +3727,48 @@ UNIT_TEST(BookmarkSourceImportPersistsInputFingerprint)
   TEST(GetImportedBookmarks(manager, "contacts")[0].m_sourceFingerprint.empty(), ());
 }
 
+UNIT_TEST(BookmarkContactPresentationPreservesStoredAppearanceAcrossMoves)
+{
+  BookmarkManager manager(BM_CALLBACKS);
+  manager.EnableTestMode(true);
+  auto const contacts =
+      ImportBookmarks(manager, "android-contacts", "Contacts", {{"key", "Name", "Address", 49, -123}});
+  auto const other = manager.CreateBookmarkCategory("Other");
+  kml::BookmarkData data;
+  data.m_point = mercator::FromLatLon(49.2, -123.1);
+  data.m_icon = kml::BookmarkIcon::Hotel;
+  data.m_color.m_predefinedColor = kml::PredefinedColor::Red;
+  data.m_minZoom = 8;
+  auto session = manager.GetEditSession();
+  auto * bookmark = session.CreateBookmark(std::move(data));
+  auto const id = bookmark->GetId();
+  session.AttachBookmark(id, other);
+  auto const original = bookmark->GetData();
+  session.DetachBookmark(id, other);
+  session.AttachBookmark(id, contacts.m_categoryId);
+  TEST_EQUAL(bookmark->GetMinZoom(), 14, ());
+  TEST_EQUAL(bookmark->GetSymbolNames()->begin()->second, "contact-s", ());
+
+  m2::AnyRectD rect(bookmark->GetPivot(), ang::AngleD(0.0), m2::RectD(-1e-7, -1e-7, 1e-7, 1e-7));
+  auto find = [&](int zoom)
+  {
+    return manager.FindNearestUserMark([&](UserMark::Type) { return rect; }, [](UserMark::Type) { return false; },
+                                       zoom);
+  };
+  TEST(find(13) == nullptr, ());
+  TEST(find(14) == bookmark, ());
+  session.DetachBookmark(id, contacts.m_categoryId);
+  session.AttachBookmark(id, other);
+  TEST_EQUAL(bookmark->GetMinZoom(), 8, ());
+  TEST(bookmark->GetData() == original, ());
+}
+
 UNIT_TEST(BookmarkSourceImportPoiPresentationPreservesUserAppearance)
 {
   classificator::Load();
   BookmarkManager manager(BM_CALLBACKS);
   manager.EnableTestMode(true);
-  std::vector<BookmarkImportEntry> entries = {{"key", "Name", "Address", 49, -123, "14,contact-s;15,contact-m", true}};
+  std::vector<BookmarkImportEntry> entries = {{"key", "Name", "Address", 49, -123}};
   entries[0].m_requireSourceCategory = true;
   auto result = ImportBookmarks(manager, "android-contacts", "Contacts", entries);
   auto id = *manager.GetUserMarkIds(result.m_categoryId).begin();

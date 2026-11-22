@@ -1,9 +1,5 @@
 # One-Shot Contact Import
 
-Local branch: `feature/android-contact-import-clean`, based on upstream master
-`0297791ee7b92105655f4573b29c16a02737b825`. This does not modify PR #13311 or #13716.
-The previous prototype remains on `feature/android-contact-import` in its original checkout.
-
 ## Behavior
 
 - Bookmarks and Tracks > Import contacts asks for explicit confirmation and, if needed,
@@ -42,21 +38,17 @@ The shared address-search prerequisite is reused from the separately reviewed se
 There is no contact-specific map marker layer, search provider, setting, or provider observer.
 Global Android search queries the existing bookmark-name index across all lists, alongside
 ordinary map search. Imported contacts use that same bookmark path without Contacts access.
-The familiar person symbol and label presentation use generic bookmark custom-image metadata.
-User-selected icons/colors override the imported presentation. Existing untouched imports gain
-the presentation on re-import. The shared prerequisite also improves ordinary address matching.
+The tagged Contacts category supplies its person symbol and label at render time. Moving an
+ordinary bookmark through Contacts preserves its stored icon, color and minimum zoom.
+Household bookmarks record the hashed provider key of each current resident. Earlier imports
+stored only the primary key and address fingerprints. Re-importing an untouched household
+updates its membership metadata.
 
-## Local Test Build
-
-The OM Test artifact uses `app.organicmaps.cyclingtests.debug`, the existing debug signing key,
-and the local `OM Test` label override. It does not replace `app.organicmaps.debug` (OM Contacts).
-Local packaging is selected with the init script outside this checkout:
+## Android test build
 
 ```sh
 cd android
-ANDROID_HOME="$HOME/Android/Sdk" ./gradlew app:assembleGoogleDebug \
-  --init-script /home/jared/Repos/organicmaps/contacts-import-test.init.gradle \
-  -Parm64 -Pnjobs=1 --max-workers=1
+./gradlew :app:assembleGoogleDebug :app:testGoogleDebugUnitTest :sdk:testDebugUnitTest -Parm64
 ```
 
 ## Manual Checks
@@ -89,4 +81,3 @@ cmake --build build-contact-import-native --target map_tests search_tests search
 ```
 
 Native tests must use isolated writable/settings directories, not personal bookmark data.
-No GitHub publication or PR changes are part of this local test preparation.

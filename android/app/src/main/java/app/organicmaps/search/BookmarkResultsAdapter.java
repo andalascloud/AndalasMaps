@@ -11,16 +11,15 @@ import app.organicmaps.R;
 import app.organicmaps.sdk.bookmarks.data.BookmarkCategory;
 import app.organicmaps.sdk.bookmarks.data.BookmarkInfo;
 import app.organicmaps.sdk.bookmarks.data.BookmarkManager;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.function.LongConsumer;
 
 /** Ordinary bookmark results, independent of the bookmark's import source. */
 final class BookmarkResultsAdapter extends RecyclerView.Adapter<BookmarkResultsAdapter.Holder>
 {
-  private final List<Long> results = new ArrayList<>();
+  private static final long[] EMPTY = {};
+  private long[] results = EMPTY;
   private final Map<Long, BookmarkInfo> details = new HashMap<>();
   private final LongConsumer select;
   private boolean expanded;
@@ -32,28 +31,31 @@ final class BookmarkResultsAdapter extends RecyclerView.Adapter<BookmarkResultsA
 
   void update(long[] ids)
   {
+    int oldCount = getItemCount();
     if (ids == null)
       expanded = false;
-    results.clear();
+    results = ids == null ? EMPTY : ids;
     details.clear();
-    if (ids != null)
-      for (long id : ids)
-      {
-        results.add(id);
-      }
-    notifyDataSetChanged();
+    int newCount = getItemCount();
+    int common = Math.min(oldCount, newCount);
+    if (common > 0)
+      notifyItemRangeChanged(0, common);
+    if (oldCount < newCount)
+      notifyItemRangeInserted(common, newCount - oldCount);
+    else if (oldCount > newCount)
+      notifyItemRangeRemoved(common, oldCount - newCount);
   }
 
   @Override
   public int getItemCount()
   {
-    return SearchResultsPresentation.bookmarkRows(results.size(), expanded);
+    return SearchResultsPresentation.bookmarkRows(results.length, expanded);
   }
 
   @Override
   public int getItemViewType(int position)
   {
-    return SearchResultsPresentation.bookmarkRow(position, results.size(), expanded).ordinal();
+    return SearchResultsPresentation.bookmarkRow(position, results.length, expanded).ordinal();
   }
   @NonNull
   @Override
@@ -88,15 +90,23 @@ final class BookmarkResultsAdapter extends RecyclerView.Adapter<BookmarkResultsA
         app.organicmaps.util.Graphics.tint(label, androidx.appcompat.R.attr.colorAccent);
         label.setText(expanded
                           ? holder.itemView.getContext().getString(R.string.bookmark_search_show_less)
-                          : holder.itemView.getContext().getString(R.string.bookmark_search_show_all, results.size()));
+                          : holder.itemView.getContext().getString(R.string.bookmark_search_show_all, results.length));
         label.setOnClickListener(view -> {
+          int first = SearchResultsPresentation.INITIAL_BOOKMARKS;
+          int extra = results.length - first;
+          if (extra <= 0)
+            return;
           expanded = !expanded;
-          notifyDataSetChanged();
+          if (expanded)
+            notifyItemRangeInserted(first, extra);
+          else
+            notifyItemRangeRemoved(first, extra);
+          notifyItemChanged(expanded ? results.length : first);
         });
       }
       return;
     }
-    BookmarkInfo info = details.computeIfAbsent(results.get(position), BookmarkManager.INSTANCE::getBookmarkInfo);
+    BookmarkInfo info = details.computeIfAbsent(results[position], BookmarkManager.INSTANCE::getBookmarkInfo);
     if (info == null)
     {
       // The bookmark can be deleted between the native result batch and binding. A new search

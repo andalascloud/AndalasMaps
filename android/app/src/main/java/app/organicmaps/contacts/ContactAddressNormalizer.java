@@ -157,11 +157,24 @@ final class ContactAddressNormalizer
   @NonNull
   static String normalizeStreet(@NonNull String value)
   {
-    final List<String> tokens = normalizeTokens(prepareAddress(value));
+    String prepared = prepareAddress(value.replace('\n', ',').replace('\r', ','));
+    int comma = prepared.indexOf(',');
+    if (comma >= 0)
+    {
+      String component = prepared.substring(0, comma);
+      if (looksLikeStructuredStreet(component))
+        return normalizeStreetComponent(component);
+    }
+    final List<String> tokens = normalizeTokens(prepared);
     final int streetEnd = findStreetEnd(tokens);
     if (streetEnd >= 0)
       return String.join(" ", tokens.subList(0, streetEnd + 1));
     return String.join(" ", tokens);
+  }
+
+  static String normalizeStreetComponent(String street)
+  {
+    return String.join(" ", normalizeTokens(prepareAddress(street)));
   }
 
   @NonNull

@@ -17,16 +17,13 @@ import app.organicmaps.sdk.downloader.MapManager;
 import app.organicmaps.sdk.search.SearchEngine;
 import app.organicmaps.sdk.util.Language;
 import app.organicmaps.sdk.util.concurrency.ThreadPool;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
 public final class ContactsImportCoordinator
 {
   private final Application application;
-  private Application getApplication()
-  {
-    return application;
-  }
   private static ContactsImportCoordinator instance;
 
   // Process-owned: the bookmarks activity is finished when returning to the map.
@@ -46,7 +43,7 @@ public final class ContactsImportCoordinator
   private CancellationSignal reading;
   private long readGeneration;
 
-  public ContactsImportCoordinator(@NonNull Application app)
+  private ContactsImportCoordinator(@NonNull Application app)
   {
     application = app;
     importer = new ContactsImporter(resolver, this::save, main::post, this::hasPermission, this::publish);
@@ -74,7 +71,7 @@ public final class ContactsImportCoordinator
   private boolean hasPermission()
   {
     return Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
- && ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.READ_CONTACTS)
+ && ContextCompat.checkSelfPermission(application, Manifest.permission.READ_CONTACTS)
         == PackageManager.PERMISSION_GRANTED;
   }
 
@@ -113,20 +110,19 @@ public final class ContactsImportCoordinator
     ThreadPool.getStorage().execute(() -> {
       try
       {
-        List<ContactsImporter.Contact> contacts = ContactsReader.read(getApplication().getContentResolver(), signal);
+        List<ContactsImporter.Contact> contacts = ContactsReader.read(application.getContentResolver(), signal);
         main.post(() -> {
           if (generation != readGeneration)
             return;
           reading = null;
           try
           {
-            java.util.List<ContactsImporter.Entry> previous = new java.util.ArrayList<>();
+            var previous = new ArrayList<ContactsImporter.Entry>();
             for (var location : BookmarkManager.INSTANCE.getImportedContactLocations())
             {
               previous.add(
                   new ContactsImporter.Entry(location.key, "", location.address,
                                              new ContactsImporter.Location(location.latitude, location.longitude),
-                                             BookmarkManager.INSTANCE.isContactCategory(location.categoryId),
                                              location.canModify, List.of(), location.fingerprint));
             }
             importer.start(contacts, previous);
@@ -178,7 +174,7 @@ public final class ContactsImportCoordinator
   private ContactsImporter.Summary save(List<ContactsImporter.Entry> entries)
   {
     final long[] values = BookmarkManager.INSTANCE.importContactBookmarks(
-        getApplication().getString(R.string.bookmarks_contacts_list_name),
+        application.getString(R.string.bookmarks_contacts_list_name),
         entries.stream().map(ContactsImporter.Entry::key).toArray(String[] ::new),
         entries.stream().map(ContactsImporter.Entry::name).toArray(String[] ::new),
         entries.stream().map(ContactsImporter.Entry::address).toArray(String[] ::new),
@@ -208,7 +204,7 @@ public final class ContactsImportCoordinator
       long id = SearchEngine.INSTANCE.resolveAddress(
           queries.stream().map(query -> query.query).toArray(String[] ::new),
           queries.stream().map(query -> query.expectedStreet).toArray(String[] ::new),
-          Language.getKeyboardLocale(getApplication()), (requestId, found, lat, lon) -> {
+          Language.getKeyboardLocale(application), (requestId, found, lat, lon) -> {
             if (requestId != activeId)
               return;
             activeId = 0;

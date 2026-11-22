@@ -96,11 +96,7 @@ void Bookmark::SetData(kml::BookmarkData const & data)
   m_ptOrg = data.m_point;
   m_data = data;
   if (changedAppearance)
-  {
-    m_data.m_properties.erase("CustomImageStyle");
-    m_data.m_properties.erase("CustomImage");
-    m_data.m_properties["CustomImageOverride"] = "1";
-  }
+    OverridePoiPresentation();
   m_data.m_color = kml::NormalizeBookmarkColorData(m_data.m_color);
 }
 
@@ -182,8 +178,41 @@ dp::Anchor Bookmark::GetAnchor() const
   return dp::Bottom;
 }
 
+void Bookmark::OverridePoiPresentation()
+{
+  if (m_data.m_properties.erase("CustomImageStyle"))
+  {
+    m_data.m_properties.erase(kCustomImageProperty);
+    m_data.m_minZoom = 1;
+  }
+  m_data.m_properties["CustomImageOverride"] = "1";
+}
+
+bool Bookmark::HasContactPresentation() const
+{
+  return m_isContactCategory && !m_data.m_properties.contains("CustomImageOverride");
+}
+
+bool Bookmark::HasStoredContactImage() const
+{
+  auto const it = m_data.m_properties.find(kCustomImageProperty);
+  return it != m_data.m_properties.end() &&
+         (it->second == "14,contact-s;15,contact-m" || it->second == "16,contact-m" || it->second == "15,contact-m");
+}
+
+int Bookmark::GetMinZoom() const
+{
+  if (HasContactPresentation())
+    return 14;
+  return HasStoredContactImage() ? 1 : m_data.m_minZoom;
+}
+
 bool Bookmark::HasPoiPresentation() const
 {
+  if (HasContactPresentation())
+    return true;
+  if (HasStoredContactImage())
+    return false;
   auto const it = m_data.m_properties.find("CustomImageStyle");
   return it != m_data.m_properties.end() && it->second == "poi";
 }
@@ -205,6 +234,16 @@ drape_ptr<df::UserPointMark::SymbolNameZoomInfo> Bookmark::GetSymbolNames() cons
 
 drape_ptr<df::UserPointMark::SymbolNameZoomInfo> Bookmark::GetCustomSymbolNames() const
 {
+  if (HasContactPresentation())
+  {
+    auto symbols = make_unique_dp<SymbolNameZoomInfo>();
+    symbols->emplace(14, "contact-s");
+    symbols->emplace(15, "contact-m");
+    return symbols;
+  }
+  if (HasStoredContactImage())
+    return nullptr;
+
   auto const it = m_data.m_properties.find(kCustomImageProperty);
   if (it == m_data.m_properties.end())
     return nullptr;
@@ -216,20 +255,9 @@ drape_ptr<df::UserPointMark::SymbolNameZoomInfo> Bookmark::GetCustomSymbolNames(
     auto pos = token.find(',');
     if (pos != std::string::npos && strings::to_uint(token.substr(0, pos), zoomLevel))
       token = token.substr(pos + 1);
-    // Imported contacts use the POI presentation and should appear at the same scale as other
-    // POIs. Older imports stored 16 with the medium symbol only.
-    if (HasPoiPresentation() && zoomLevel > 15)
-      zoomLevel = 15;
     if (!token.empty() && zoomLevel >= 1 && zoomLevel <= scales::GetUpperStyleScale())
       symbolNames->emplace(zoomLevel, std::string(token));
   });
-
-  if (HasPoiPresentation() && symbolNames->find(14) == symbolNames->end())
-  {
-    auto const medium = symbolNames->find(15);
-    if (medium != symbolNames->end() && medium->second == "contact-m")
-      symbolNames->emplace(14, "contact-s");
-  }
 
   if (symbolNames->empty())
     return nullptr;
@@ -290,11 +318,7 @@ void Bookmark::SetColor(dp::Color color)
 
   SetDirty();
   if (HasPoiPresentation())
-  {
-    m_data.m_properties.erase("CustomImageStyle");
-    m_data.m_properties.erase("CustomImage");
-    m_data.m_properties["CustomImageOverride"] = "1";
-  }
+    OverridePoiPresentation();
   m_data.m_color = colorData;
 }
 
@@ -394,18 +418,20 @@ bool Bookmark::CanFillPlacePageMetadata() const
   return false;
 }
 
-void Bookmark::Attach(kml::MarkGroupId groupId)
+void Bookmark::Attach(kml::MarkGroupId groupId, bool isContactCategory)
 {
   ASSERT_NOT_EQUAL(groupId, kml::kInvalidMarkGroupId, ());
   ASSERT_EQUAL(m_groupId, kml::kInvalidMarkGroupId, ());
   // A restored bookmark may have been rendered before, so re-attaching has to make it dirty again.
   SetDirty();
   m_groupId = groupId;
+  m_isContactCategory = isContactCategory;
 }
 
 void Bookmark::Detach()
 {
   m_groupId = kml::kInvalidMarkGroupId;
+  m_isContactCategory = false;
 }
 
 BookmarkCategory::BookmarkCategory(std::string const & name, kml::MarkGroupId groupId, bool autoSave)

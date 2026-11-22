@@ -55,7 +55,7 @@ public class ContactsImporterTest
   {
     String fingerprint =
         "v3:" + ContactSourceKey.hash("address-v3:" + new ContactAddress(address, "", "").getAddressKey());
-    return new ContactsImporter.Entry(key, "", address, location, true, true, List.of(), fingerprint);
+    return new ContactsImporter.Entry(key, "", address, location, true, List.of(), fingerprint);
   }
 
   private ContactsImporter.State last()
@@ -75,7 +75,7 @@ public class ContactsImporterTest
       int request = callbacks.size();
       importer.start(people, List.of(new ContactsImporter.Entry("one", "", address,
                                                                 new ContactsImporter.Location(49.1235, -122.765), true,
-                                                                true, List.of(), oldFingerprint)));
+                                                                List.of(), oldFingerprint)));
       assertEquals(request + 1, callbacks.size());
       var precise = new ContactsImporter.Location(49.1234567, -122.7654321);
       complete(request, precise);
@@ -93,7 +93,7 @@ public class ContactsImporterTest
     String address = "123 Example Street, Canada";
     importer.start(List.of(contact("one", address)),
                    List.of(new ContactsImporter.Entry("one", "Name", address, new ContactsImporter.Location(49, -123),
-                                                      true, true, List.of(), "v3:unknown")));
+                                                      true, List.of(), "v3:unknown")));
     assertEquals(1, callbacks.size());
     complete(0, null);
   }
@@ -106,7 +106,7 @@ public class ContactsImporterTest
     importer.start(List.of(person));
     complete(0, new ContactsImporter.Location(49, -123));
     var previous = saved.get(0);
-    assertTrue(previous.get(0).sourceKeys().startsWith("v3:"));
+    assertTrue(previous.get(0).sourceKeys().startsWith("v4:"));
     importer.start(List.of(person), previous);
     assertEquals(1, callbacks.size());
     assertEquals(2, saved.size());
@@ -126,10 +126,28 @@ public class ContactsImporterTest
     complete(0, new ContactsImporter.Location(49, -123));
     complete(1, new ContactsImporter.Location(49, -123));
     assertEquals(1, saved.get(0).size());
-    assertEquals(2, saved.get(0).get(0).sourceKeys().substring(3).split(";").length);
+    assertEquals(2, saved.get(0).get(0).sourceKeys().split(":")[1].split(";").length);
     importer.start(List.of(first, second), saved.get(0));
     assertEquals(2, callbacks.size());
     assertEquals(1, saved.get(1).size());
+  }
+
+  @Test
+  public void movedHouseholdProtectsEveryMemberEvenIfThePrimaryContactIsAbsent()
+  {
+    String address = "123 Example Road, Surrey, BC, Canada";
+    var people =
+        List.of(contact(ContactSourceKey.hash("one"), address), contact(ContactSourceKey.hash("two"), address));
+    importer.start(people);
+    complete(0, new ContactsImporter.Location(49, -123));
+    var group = saved.get(0).get(0);
+    var moved = new ContactsImporter.Entry(group.key(), group.name(), address, group.location(), false, List.of(),
+                                           group.sourceKeys());
+    var secondary = people.stream().filter(person -> !person.key.equals(group.key())).findFirst().orElseThrow();
+    importer.start(List.of(secondary), List.of(moved));
+    assertEquals(1, callbacks.size());
+    assertEquals(1, saved.get(1).size());
+    assertEquals(group.key(), saved.get(1).get(0).key());
   }
 
   @Test
@@ -190,9 +208,9 @@ public class ContactsImporterTest
     String address = "123 Main Street, Canada";
     importer.start(List.of(contact("moved", address), contact("edited", address)),
                    List.of(new ContactsImporter.Entry("moved", "", address, new ContactsImporter.Location(49, -123),
-                                                      false, true, List.of()),
+                                                      false, List.of()),
                            new ContactsImporter.Entry("edited", "", address, new ContactsImporter.Location(49, -123),
-                                                      true, false, List.of())));
+                                                      false, List.of())));
     assertTrue(callbacks.isEmpty());
     assertEquals(2, saved.get(0).size());
     assertTrue(saved.get(0).stream().allMatch(entry -> entry.obsoleteKeys().isEmpty()));
@@ -297,8 +315,8 @@ public class ContactsImporterTest
     String address = "8877 Wright St, Langley";
     var point = new ContactsImporter.Location(49.1, -122.6);
     importer.start(List.of(contact("new", address)),
-                   List.of(new ContactsImporter.Entry("moved", "", address, point, false, true, List.of()),
-                           new ContactsImporter.Entry("edited", "", address, point, true, false, List.of())));
+                   List.of(new ContactsImporter.Entry("moved", "", address, point, false, List.of()),
+                           new ContactsImporter.Entry("edited", "", address, point, false, List.of())));
     complete(0, point);
     assertEquals("new", saved.get(0).get(0).key());
     assertTrue(saved.get(0).get(0).obsoleteKeys().isEmpty());

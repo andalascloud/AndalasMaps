@@ -102,7 +102,7 @@ bool Unmodified(Bookmark const & bookmark, bool strict)
     return false;
   if (!strict)
     return true;
-  auto const appearance = Property(properties, kAppearance);
+  auto const & appearance = Property(properties, kAppearance);
   if (!appearance.empty())
     return appearance == Appearance(data);
   // Legacy imports have no appearance snapshot. Only migrate their untouched default style.
@@ -169,7 +169,7 @@ BookmarkImportResult ImportBookmarks(BookmarkManager & manager, std::string cons
       if (!bookmark || Property(bookmark->GetData().m_properties, kSource) != source)
         continue;
       auto const & properties = bookmark->GetData().m_properties;
-      auto const key = Property(properties, kKey);
+      auto const & key = Property(properties, kKey);
       existing[key].push_back(id);
       // Recover changed provider keys only when the previous key is absent from this import.
       // Never merge two different current contacts just because they share a name and address.
@@ -245,25 +245,18 @@ BookmarkImportResult ImportBookmarks(BookmarkManager & manager, std::string cons
         ++result.m_edited;
         continue;
       }
-      data = bookmark->GetData();
-      bool const needsPresentation = !entry.m_customImage.empty() && !data.m_properties.contains("CustomImage") &&
-                                     !data.m_properties.contains("CustomImageOverride") &&
-                                     data.m_icon == kml::BookmarkIcon::None &&
-                                     data.m_color.m_predefinedColor == kml::PredefinedColor::Blue;
-      bool const isPoiPresentation = Property(data.m_properties, "CustomImageStyle") == "poi";
-      bool const needsPoiZoomUpdate =
-          entry.m_poiStyle && isPoiPresentation &&
-          (data.m_minZoom != 14 || Property(data.m_properties, "CustomImage") != entry.m_customImage);
-      if (!needsPresentation && !needsPoiZoomUpdate &&
-          (!entry.m_requireSourceCategory || !Property(data.m_properties, kAppearance).empty()) &&
-          Property(data.m_properties, kSnapshot) == snapshot && Property(data.m_properties, kKey) == entry.m_key &&
-          Property(data.m_properties, kFingerprint) == entry.m_sourceFingerprint &&
+      auto const & existingData = bookmark->GetData();
+      if ((!entry.m_requireSourceCategory || !Property(existingData.m_properties, kAppearance).empty()) &&
+          Property(existingData.m_properties, kSnapshot) == snapshot &&
+          Property(existingData.m_properties, kKey) == entry.m_key &&
+          Property(existingData.m_properties, kFingerprint) == entry.m_sourceFingerprint &&
           mercator::DistanceOnEarth(bookmark->GetPivot(), point) <= 1.0)
       {
         ++result.m_unchanged;
         retire(entry, bookmark->GetGroupId());
         continue;
       }
+      data = existingData;
     }
     else
     {
@@ -291,24 +284,6 @@ BookmarkImportResult ImportBookmarks(BookmarkManager & manager, std::string cons
       data.m_properties[kFingerprint] = entry.m_sourceFingerprint;
     data.m_properties[kLatitude] = Coordinate(entry.m_lat);
     data.m_properties[kLongitude] = Coordinate(entry.m_lon);
-    if (!entry.m_customImage.empty() && !data.m_properties.contains("CustomImage") &&
-        !data.m_properties.contains("CustomImageOverride") && data.m_icon == kml::BookmarkIcon::None &&
-        data.m_color.m_predefinedColor == kml::PredefinedColor::Blue)
-    {
-      data.m_properties["CustomImage"] = entry.m_customImage;
-      if (entry.m_poiStyle)
-      {
-        data.m_properties["CustomImageStyle"] = "poi";
-        data.m_minZoom = 14;
-      }
-    }
-    else if (entry.m_poiStyle && Property(data.m_properties, "CustomImageStyle") == "poi")
-    {
-      // Existing imports created before the marker became visible at scale 14.
-      if (!entry.m_customImage.empty())
-        data.m_properties["CustomImage"] = entry.m_customImage;
-      data.m_minZoom = 14;
-    }
     data.m_properties[kAppearance] = Appearance(data);
     if (id == kml::kInvalidMarkId)
     {

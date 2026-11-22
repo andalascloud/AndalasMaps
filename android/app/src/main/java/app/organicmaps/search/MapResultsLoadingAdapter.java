@@ -10,6 +10,7 @@ import app.organicmaps.R;
 /** Placeholder below bookmark results while map results are still loading. */
 final class MapResultsLoadingAdapter extends RecyclerView.Adapter<MapResultsLoadingAdapter.Holder>
 {
+  private static final int PLACEHOLDER_COUNT = 3;
   private boolean visible;
 
   void setVisible(boolean value)
@@ -17,13 +18,16 @@ final class MapResultsLoadingAdapter extends RecyclerView.Adapter<MapResultsLoad
     if (visible == value)
       return;
     visible = value;
-    notifyDataSetChanged();
+    if (visible)
+      notifyItemRangeInserted(0, PLACEHOLDER_COUNT);
+    else
+      notifyItemRangeRemoved(0, PLACEHOLDER_COUNT);
   }
 
   @Override
   public int getItemCount()
   {
-    return visible ? 3 : 0;
+    return visible ? PLACEHOLDER_COUNT : 0;
   }
   @NonNull
   @Override

@@ -1,7 +1,9 @@
 package app.organicmaps.contacts;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -9,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 // Main-thread state machine. No observers, durable contact cache, or search-UI integration.
 public final class ContactsImporter
@@ -54,18 +57,17 @@ public final class ContactsImporter
   record Location(double latitude, double longitude)
   {
   }
-  record Entry(String key, String name, String address, Location location, boolean inContacts, boolean canModify,
-               List<String> obsoleteKeys, String sourceKeys)
+  record Entry(String key, String name, String address, Location location, boolean canModify, List<String> obsoleteKeys,
+               String sourceKeys)
   {
-    Entry(String key, String name, String address, Location location, boolean inContacts, boolean canModify,
-          List<String> obsoleteKeys)
+    Entry(String key, String name, String address, Location location, boolean canModify, List<String> obsoleteKeys)
     {
-      this(key, name, address, location, inContacts, canModify, obsoleteKeys, "");
+      this(key, name, address, location, canModify, obsoleteKeys, "");
     }
 
     Entry(String key, String name, String address, Location location)
     {
-      this(key, name, address, location, true, true, List.of());
+      this(key, name, address, location, true, List.of());
     }
   }
 
@@ -135,7 +137,8 @@ public final class ContactsImporter
   private final Map<String, Location> locations = new HashMap<>();
   private final List<Entry> entries = new ArrayList<>();
   private final Map<String, Entry> protectedEntries = new HashMap<>();
-  private final List<Entry> previousEntries = new ArrayList<>();
+  private final Map<String, List<Entry>> previousByStreet = new HashMap<>();
+  private final Set<String> reportedProtectedKeys = new HashSet<>();
   private final Map<String, String> streetKeys = new HashMap<>();
   private List<Contact> contacts = List.of();
   private int index;
@@ -162,16 +165,19 @@ public final class ContactsImporter
   void start(List<Contact> contacts, List<Entry> previous)
   {
     clear();
-    Set<String> ambiguousSources = new java.util.HashSet<>();
+    Set<String> ambiguousSources = new HashSet<>();
     for (Entry entry : previous)
     {
-      if (!entry.inContacts() || !entry.canModify())
+      var fingerprint = Fingerprint.parse(entry.sourceKeys());
+      if (!entry.canModify())
       {
         protectedEntries.putIfAbsent(entry.key(), entry);
+        for (String member : fingerprint.members())
+          protectedEntries.putIfAbsent(member, entry);
         continue;
       }
-      // Revalidate older resolutions after mapped-name and street-order matching changes.
-      for (String sourceKey : decodeSourceKeys(entry.sourceKeys()))
+      previousByStreet.computeIfAbsent(residenceAddress(entry.address()), ignored -> new ArrayList<>()).add(entry);
+      for (String sourceKey : fingerprint.addresses())
       {
         Location existing = locations.putIfAbsent(sourceKey, entry.location());
         if (existing != null && !existing.equals(entry.location()))
@@ -179,9 +185,9 @@ public final class ContactsImporter
       }
     }
     ambiguousSources.forEach(locations::remove);
-    previousEntries.addAll(previous);
     this.contacts = List.copyOf(contacts);
     index = addressIndex = unresolved = 0;
+    lastProgress = System.nanoTime() - PROGRESS_INTERVAL_NS;
     running = true;
     next();
   }
@@ -204,7 +210,8 @@ public final class ContactsImporter
     entries.clear();
     locations.clear();
     protectedEntries.clear();
-    previousEntries.clear();
+    previousByStreet.clear();
+    reportedProtectedKeys.clear();
     streetKeys.clear();
   }
 
@@ -218,16 +225,13 @@ public final class ContactsImporter
         -> String.join(" ", ContactAddressNormalizer.matchTokens(ContactAddressNormalizer.normalizeStreet(value))));
   }
 
-  private final class ResidenceGroup
+  private static final class ResidenceGroup
   {
     final List<Entry> entries = new ArrayList<>();
     final Set<String> names = new LinkedHashSet<>();
 
-    boolean canAccept(Entry entry)
+    boolean withinRadius(Entry entry)
     {
-      if (residenceAddress(entry.address()).isEmpty()
-          || !residenceAddress(first().address()).equals(residenceAddress(entry.address())))
-        return false;
       return entries.stream().allMatch(
           existing -> distanceMeters(existing.location(), entry.location()) <= RESIDENCE_RADIUS_METERS);
     }
@@ -249,9 +253,10 @@ public final class ContactsImporter
   private List<Entry> groupByResidence(List<Entry> source)
   {
     List<Entry> ordered = new ArrayList<>(source);
-    ordered.sort(java.util.Comparator.comparing(Entry::key));
+    ordered.sort(Comparator.comparing(Entry::key));
     List<Entry> result = new ArrayList<>();
     List<ResidenceGroup> groups = new ArrayList<>();
+    Map<String, List<ResidenceGroup>> groupsByStreet = new HashMap<>();
     for (Entry entry : ordered)
     {
       if (protectedEntries.containsKey(entry.key()))
@@ -260,9 +265,11 @@ public final class ContactsImporter
         continue;
       }
       ResidenceGroup target = null;
-      for (ResidenceGroup group : groups)
+      String street = residenceAddress(entry.address());
+      var candidates = groupsByStreet.computeIfAbsent(street, ignored -> new ArrayList<>());
+      for (ResidenceGroup group : candidates)
       {
-        if (group.canAccept(entry))
+        if (group.withinRadius(entry))
         {
           target = group;
           break;
@@ -272,38 +279,35 @@ public final class ContactsImporter
       {
         target = new ResidenceGroup();
         groups.add(target);
+        if (!street.isEmpty())
+          candidates.add(target);
       }
       target.add(entry);
     }
 
-    Set<String> assignedKeys = new java.util.HashSet<>();
-    Set<String> currentKeys = new java.util.HashSet<>();
+    Set<String> assignedKeys = new HashSet<>();
+    Set<String> currentKeys = new HashSet<>();
     source.forEach(entry -> currentKeys.add(entry.key()));
     for (ResidenceGroup group : groups)
     {
-      Set<String> groupKeys = new java.util.HashSet<>();
+      Set<String> groupKeys = new HashSet<>();
       group.entries.forEach(entry -> groupKeys.add(entry.key()));
-      List<String> previousKeys =
-          previousEntries.stream()
-              .filter(previous -> previous.inContacts() && previous.canModify() && group.canAccept(previous))
-              .map(Entry::key)
-              .filter(key -> !protectedEntries.containsKey(key) && !assignedKeys.contains(key))
-              .filter(key -> !currentKeys.contains(key) || groupKeys.contains(key))
-              .distinct()
-              .sorted()
-              .toList();
+      String street = residenceAddress(group.first().address());
+      List<Entry> previous = street.isEmpty() ? List.of() : previousByStreet.getOrDefault(street, List.of());
+      List<String> previousKeys = previous.stream()
+                                      .filter(group::withinRadius)
+                                      .map(Entry::key)
+                                      .filter(key -> !protectedEntries.containsKey(key) && !assignedKeys.contains(key))
+                                      .filter(key -> !currentKeys.contains(key) || groupKeys.contains(key))
+                                      .distinct()
+                                      .sorted()
+                                      .toList();
       String primaryKey = previousKeys.isEmpty() ? group.first().key() : previousKeys.get(0);
       assignedKeys.addAll(previousKeys);
       assignedKeys.add(primaryKey);
-      result.add(new Entry(primaryKey, String.join(", ", group.names), group.first().address(),
-                           group.first().location(), true, true,
-                           previousKeys.stream().filter(key -> !key.equals(primaryKey)).toList(),
-                           "v3:"
-                               + String.join(";", group.entries.stream()
-                                                      .flatMap(entry -> decodeSourceKeys(entry.sourceKeys()).stream())
-                                                      .distinct()
-                                                      .sorted()
-                                                      .toList())));
+      result.add(new Entry(
+          primaryKey, String.join(", ", group.names), group.first().address(), group.first().location(), true,
+          previousKeys.stream().filter(key -> !key.equals(primaryKey)).toList(), Fingerprint.encode(group.entries)));
     }
     return result;
   }
@@ -320,6 +324,9 @@ public final class ContactsImporter
     return 2 * 6371000 * Math.asin(Math.sqrt(h));
   }
 
+  private static final long PROGRESS_INTERVAL_NS = 100_000_000L;
+  private long lastProgress;
+
   private void next()
   {
     if (!running)
@@ -329,15 +336,34 @@ public final class ContactsImporter
       finish(Phase.ERROR, Error.PERMISSION, null);
       return;
     }
+    int firstContact = index;
+    long start = System.nanoTime();
     while (index < contacts.size())
     {
-      observer.accept(new State(Phase.RESOLVING, index, contacts.size(), unresolved, Error.NONE, null));
+      long now = System.nanoTime();
+      if (now - lastProgress >= PROGRESS_INTERVAL_NS)
+      {
+        lastProgress = now;
+        observer.accept(new State(Phase.RESOLVING, index, contacts.size(), unresolved, Error.NONE, null));
+      }
+      // Yield between cached contacts so the main looper can draw progress and deliver cancellation.
+      if (index > firstContact && now - start >= 16_000_000L)
+      {
+        long attempt = generation;
+        main.execute(() -> {
+          if (attempt == generation)
+            next();
+        });
+        return;
+      }
       Contact contact = contacts.get(index);
       Entry protectedEntry = protectedEntries.get(contact.key);
       if (protectedEntry != null && !contact.addresses.isEmpty())
       {
         // The native store will preserve this user-owned bookmark, regardless of geocoding.
-        entries.add(new Entry(contact.key, contact.name, protectedEntry.address(), protectedEntry.location()));
+        if (reportedProtectedKeys.add(protectedEntry.key()))
+          entries.add(
+              new Entry(protectedEntry.key(), contact.name, protectedEntry.address(), protectedEntry.location()));
         ++index;
         addressIndex = 0;
         continue;
@@ -416,14 +442,41 @@ public final class ContactsImporter
 
   private static Entry resolvedEntry(Contact contact, ContactAddress address, Location location, String sourceKey)
   {
-    return new Entry(contact.key, contact.name, address.address, location, true, true, List.of(), "v3:" + sourceKey);
+    return new Entry(contact.key, contact.name, address.address, location, true, List.of(), sourceKey);
   }
 
-  private static List<String> decodeSourceKeys(String value)
+  // v3 stored only address hashes. v4 also records the provider keys of household members.
+  private record Fingerprint(List<String> addresses, List<String> members)
   {
-    if (!value.startsWith("v3:"))
-      return List.of();
-    List<String> keys = List.of(value.substring(3).split(";", -1));
-    return keys.stream().allMatch(key -> key.matches("[0-9a-f]{64}")) ? keys : List.of();
+    private static final Pattern HASH = Pattern.compile("[0-9a-f]{64}");
+
+    static Fingerprint parse(String value)
+    {
+      String[] parts = value.split(":", -1);
+      if (parts.length == 2 && parts[0].equals("v3"))
+        return new Fingerprint(hashes(parts[1]), List.of());
+      if (parts.length == 3 && parts[0].equals("v4"))
+        return new Fingerprint(hashes(parts[1]), hashes(parts[2]));
+      return new Fingerprint(List.of(), List.of());
+    }
+
+    private static List<String> hashes(String field)
+    {
+      List<String> keys = List.of(field.split(";", -1));
+      return keys.stream().allMatch(key -> HASH.matcher(key).matches()) ? keys : List.of();
+    }
+
+    static String encode(List<Entry> entries)
+    {
+      // Resolved entries carry one address hash each. The group is already ordered by provider key.
+      var addresses = new java.util.TreeSet<String>();
+      var members = new ArrayList<String>();
+      for (Entry entry : entries)
+      {
+        addresses.add(entry.sourceKeys());
+        members.add(entry.key());
+      }
+      return "v4:" + String.join(";", addresses) + ":" + String.join(";", members);
+    }
   }
 }

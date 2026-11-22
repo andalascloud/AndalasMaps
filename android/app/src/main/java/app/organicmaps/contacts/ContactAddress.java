@@ -105,11 +105,14 @@ final class ContactAddress
       return candidate;
     }
     final String firstPart = ContactAddressNormalizer.prepareAddress(address.split("[,\\r\\n]", 2)[0]).trim();
-    if (street.isEmpty() && ContactAddressNormalizer.looksLikeStructuredStreet(firstPart)
+    if (street.isEmpty() && !firstPart.isEmpty() && Character.isDigit(firstPart.charAt(0))
+        && ContactAddressNormalizer.looksLikeStructuredStreet(firstPart)
         && !ContactAddressNormalizer.hasRecognizedStreetSuffix(firstPart))
       return firstPart;
     final String formattedStreet = ContactAddressNormalizer.normalizeStreet(address);
-    final String structuredStreet = ContactAddressNormalizer.normalizeStreet(street);
+    final String structuredStreet = ContactAddressNormalizer.normalizeStreetComponent(street);
+    if (!formattedStreet.isEmpty() && structuredStreet.startsWith(formattedStreet + " "))
+      return structuredStreet;
     final boolean useFormattedStreet = ContactAddressNormalizer.looksLikeAddressQuery(formattedStreet);
     return useFormattedStreet ? formattedStreet : structuredStreet;
   }

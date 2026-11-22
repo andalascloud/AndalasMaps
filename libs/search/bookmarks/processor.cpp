@@ -258,16 +258,10 @@ void Processor::Search(Params const & params) const
   }
 
   BailIfCancelled();
-  sort(idInfos.begin(), idInfos.end());
-
-  size_t numEmitted = 0;
-  for (auto const & idInfo : idInfos)
-  {
-    if (numEmitted >= params.m_maxNumResults)
-      break;
-    m_emitter.AddBookmarkResult(bookmarks::Result(idInfo.m_id));
-    ++numEmitted;
-  }
+  auto const end = idInfos.begin() + std::min(idInfos.size(), params.m_maxNumResults);
+  std::partial_sort(idInfos.begin(), end, idInfos.end());
+  for (auto it = idInfos.begin(); it != end; ++it)
+    m_emitter.AddBookmarkResult(bookmarks::Result(it->m_id));
 }
 
 void Processor::Finish(bool cancelled)

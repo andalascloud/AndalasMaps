@@ -15,8 +15,6 @@ struct BookmarkImportEntry
   std::string m_address;
   double m_lat = 0;
   double m_lon = 0;
-  std::string m_customImage = {};
-  bool m_poiStyle = false;
   kml::MarkGroupId m_groupId = kml::kInvalidMarkGroupId;
   // Retire only unchanged entries in the saved bookmark's source category, after a successful upsert.
   std::vector<std::string> m_supersededKeys = {};

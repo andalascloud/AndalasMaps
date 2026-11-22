@@ -8,6 +8,18 @@ import org.junit.Test;
 public class ContactAddressTest
 {
   @Test
+  public void numberedRoadsRetainTheWholeStreetComponent()
+  {
+    var ten = new ContactAddress("12 County Road 10, Springfield, TX, USA", "", "");
+    var twenty = new ContactAddress("12 County Road 20, Springfield, TX, USA", "", "");
+    assertEquals("12 County Road 10", ten.getSearchQueries().get(0).expectedStreet);
+    assertNotEquals(ten.getAddressKey(), twenty.getAddressKey());
+    assertEquals("12 State Highway 10",
+                 new ContactAddress("12 State Highway 10", "12 State Highway 10", "Springfield", "TX", "USA")
+                     .getNormalizedStreet());
+  }
+
+  @Test
   public void preservesQueensCivicNumbersAndBritishMapContext()
   {
     final ContactAddress compound = new ContactAddress("12-34 56th St, Queens, NY, USA", "", "");

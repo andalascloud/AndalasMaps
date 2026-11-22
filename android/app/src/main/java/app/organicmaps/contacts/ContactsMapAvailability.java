@@ -34,8 +34,13 @@ final class ContactsMapAvailability
   boolean mightHaveMap(ContactAddress address)
   {
     String country = ContactAddressNormalizer.formattingCountry(address.country, address.address);
+    if (!ContactAddressNormalizer.usesNorthAmericanFormatting(country))
+      return true;
     if (count != MapManager.nativeGetDownloadedCount())
+    {
       refresh();
+      return mightHaveMap(address.region, country, regions);
+    }
     if (mightHaveMap(address.region, country, regions))
       return true;
     // Storage can change during import, including replacement of maps without a count change.

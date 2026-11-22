@@ -242,14 +242,6 @@ class BookmarkCategoriesFragment :
     override fun onImportContactsButtonClick() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         contactsProgressHidden = false
-        if (contactsImport.wasInterrupted()) {
-            MaterialAlertDialogBuilder(requireContext())
-                .setMessage(R.string.bookmarks_contacts_import_interrupted)
-                .setNegativeButton(R.string.cancel, null)
-                .setPositiveButton(R.string.bookmarks_import_contacts) { _, _ -> startContactsImport() }
-                .show()
-            return
-        }
         val current = contactsImport.state.value
         if (current != null && current.isRunning) {
             showContactsImportState(current)
@@ -257,7 +249,13 @@ class BookmarkCategoriesFragment :
         }
         MaterialAlertDialogBuilder(requireContext())
             .setTitle(R.string.bookmarks_import_contacts)
-            .setMessage(R.string.bookmarks_contacts_import_explanation)
+            .setMessage(
+                if (contactsImport.wasInterrupted()) {
+                    R.string.bookmarks_contacts_import_interrupted
+                } else {
+                    R.string.bookmarks_contacts_import_explanation
+                },
+            )
             .setNegativeButton(R.string.cancel, null)
             .setPositiveButton(R.string.bookmarks_import_contacts) { _, _ ->
                 if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.READ_CONTACTS)
