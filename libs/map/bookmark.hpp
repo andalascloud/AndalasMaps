@@ -64,25 +64,37 @@ public:
   df::DepthLayer GetDepthLayerEx(settings::Placement p) const override;
 
   dp::Anchor GetAnchor() const override;
+  df::DepthLayer GetDepthLayer() const override
+  {
+    return HasPoiPresentation() ? df::DepthLayer::SearchMarkLayer : df::DepthLayer::UserMarkLayer;
+  }
+  bool GetDepthTestEnabled() const override { return !HasPoiPresentation(); }
+  bool IsMarkAboveText() const override { return HasPoiPresentation(); }
   drape_ptr<SymbolNameZoomInfo> GetSymbolNames() const override;
 
   df::ColorConstant GetColorConstant() const override;
 
   kml::MarkGroupId GetGroupId() const override;
 
-  int GetMinZoom() const override { return m_data.m_minZoom; }
+  int GetMinZoom() const override;
+  int GetMinTitleZoom() const override { return HasPoiPresentation() ? 15 : GetMinZoom(); }
 
   // Whether m_data.m_properties suitable to fill "Key info" part of placepage.
   bool CanFillPlacePageMetadata() const;
 
-  void Attach(kml::MarkGroupId groupId);
+  bool HasContactPresentation() const;
+  void Attach(kml::MarkGroupId groupId, bool isContactCategory);
   void Detach();
 
 private:
+  void OverridePoiPresentation();
+  bool HasStoredContactImage() const;
+  bool HasPoiPresentation() const;
   drape_ptr<df::UserPointMark::SymbolNameZoomInfo> GetCustomSymbolNames() const;
 
   kml::BookmarkData m_data;
   kml::MarkGroupId m_groupId;
+  bool m_isContactCategory = false;
   search::ReverseGeocoder::RegionAddress m_address;
 };
 

@@ -364,7 +364,7 @@ Bookmark * BookmarkManager::CreateBookmark(kml::BookmarkData && bmData, kml::Mar
 
     bookmark = CreateBookmark(std::move(bmData));
   }
-  bookmark->Attach(groupId);
+  bookmark->Attach(groupId, IsContactCategory(groupId));
 
   auto * group = GetBmCategory(groupId);
   group->AttachUserMark(bookmark->GetId());
@@ -401,7 +401,8 @@ Bookmark * BookmarkManager::GetBookmarkForEdit(kml::MarkId markId)
 void BookmarkManager::AttachBookmark(kml::MarkId bmId, kml::MarkGroupId catId)
 {
   CHECK_THREAD_CHECKER(m_threadChecker, ());
-  GetBookmarkForEdit(bmId)->Attach(catId);
+  auto * bookmark = GetBookmarkForEdit(bmId);
+  bookmark->Attach(catId, IsContactCategory(catId));
   GetGroup(catId)->AttachUserMark(bmId);
   m_changesTracker.OnAttachBookmark(bmId, catId);
 }
@@ -413,7 +414,7 @@ void BookmarkManager::DetachBookmark(kml::MarkId bmId, kml::MarkGroupId catId)
   DetachUserMark(bmId, catId);
 }
 
-void BookmarkManager::DeleteBookmark(kml::MarkId bmId)
+void BookmarkManager::DeleteBookmark(kml::MarkId bmId, bool rememberForUndo)
 {
   CHECK_THREAD_CHECKER(m_threadChecker, ());
   ASSERT(IsBookmark(bmId), ());
@@ -427,7 +428,8 @@ void BookmarkManager::DeleteBookmark(kml::MarkId bmId)
   DetachUserMark(bmId, groupId);
   m_changesTracker.OnDeleteMark(bmId);
 
-  m_recentlyDeletedBookmark = std::move(it->second);
+  if (rememberForUndo)
+    m_recentlyDeletedBookmark = std::move(it->second);
   m_bookmarks.erase(it);
 }
 
@@ -1769,6 +1771,17 @@ m2::RectD BookmarkManager::GetCategoryRect(kml::MarkGroupId categoryId, bool add
   return categoryRect;
 }
 
+bool BookmarkManager::IsContactCategory(kml::MarkGroupId groupId) const
+{
+  CHECK_THREAD_CHECKER(m_threadChecker, ());
+  auto const category = m_categories.find(groupId);
+  if (category == m_categories.end())
+    return false;
+  auto const & properties = category->second->GetCategoryData().m_properties;
+  auto const it = properties.find("om:import:source");
+  return it != properties.end() && it->second == "android-contacts";
+}
+
 kml::CategoryData const & BookmarkManager::GetCategoryData(kml::MarkGroupId categoryId) const
 {
   CHECK_THREAD_CHECKER(m_threadChecker, ());
@@ -1785,7 +1798,7 @@ kml::MarkGroupId BookmarkManager::GetCategoryId(std::string const & name, kml::M
 }
 
 UserMark const * BookmarkManager::FindMarkInRect(kml::MarkGroupId groupId, m2::AnyRectD const & rect,
-                                                 bool findOnlyVisible, double & d) const
+                                                 bool findOnlyVisible, double & d, std::optional<int> zoom) const
 {
   CHECK_THREAD_CHECKER(m_threadChecker, ());
   auto const * group = GetGroup(groupId);
@@ -1800,7 +1813,8 @@ UserMark const * BookmarkManager::FindMarkInRect(kml::MarkGroupId groupId, m2::A
       if (findOnlyVisible && !mark->IsVisible())
         continue;
 
-      if (mark->IsAvailableForSearch() && rect.IsPointInside(mark->GetPivot()))
+      if (mark->IsAvailableForSearch() && rect.IsPointInside(mark->GetPivot()) &&
+          (!zoom || mark->GetMinZoom() <= *zoom))
         f(mark);
     }
   }
@@ -1827,7 +1841,12 @@ void BookmarkManager::PrepareForSearch(kml::MarkGroupId groupId)
 {
   CHECK_THREAD_CHECKER(m_threadChecker, ());
   CHECK(m_callbacks.m_getSearchAPI != nullptr, ());
-  m_callbacks.m_getSearchAPI().EnableIndexingOfBookmarkGroup(groupId, true /* enable */);
+  auto & search = m_callbacks.m_getSearchAPI();
+  if (groupId == kml::kInvalidMarkGroupId)
+    for (auto const & [id, category] : m_categories)
+      search.EnableIndexingOfBookmarkGroup(id, true);
+  else
+    search.EnableIndexingOfBookmarkGroup(groupId, true);
 }
 
 void BookmarkManager::UpdateTrackMarksMinZoom()
@@ -2668,18 +2687,20 @@ class BestUserMarkFinder
 public:
   explicit BestUserMarkFinder(BookmarkManager::TTouchRectHolder const & rectHolder,
                               BookmarkManager::TFindOnlyVisibleChecker const & findOnlyVisible,
-                              BookmarkManager const * manager)
+                              BookmarkManager const * manager, std::optional<int> zoom)
     : m_rectHolder(rectHolder)
     , m_findOnlyVisible(findOnlyVisible)
     , m_d(std::numeric_limits<double>::max())
     , m_mark(nullptr)
     , m_manager(manager)
+    , m_zoom(zoom)
   {}
 
   bool operator()(kml::MarkGroupId groupId)
   {
     auto const groupType = BookmarkManager::GetGroupType(groupId);
-    if (auto const * p = m_manager->FindMarkInRect(groupId, m_rectHolder(groupType), m_findOnlyVisible(groupType), m_d))
+    if (auto const * p =
+            m_manager->FindMarkInRect(groupId, m_rectHolder(groupType), m_findOnlyVisible(groupType), m_d, m_zoom))
     {
       m_mark = p;
       return true;
@@ -2695,16 +2716,18 @@ private:
   double m_d;
   UserMark const * m_mark;
   BookmarkManager const * m_manager;
+  std::optional<int> m_zoom;
 };
 }  // namespace
 
 UserMark const * BookmarkManager::FindNearestUserMark(TTouchRectHolder const & holder,
-                                                      TFindOnlyVisibleChecker const & findOnlyVisible) const
+                                                      TFindOnlyVisibleChecker const & findOnlyVisible,
+                                                      std::optional<int> zoom) const
 {
   CHECK_THREAD_CHECKER(m_threadChecker, ());
 
   // Among the marks inside the rect (if any) finder stores the closest one to its center.
-  BestUserMarkFinder finder(holder, findOnlyVisible, this);
+  BestUserMarkFinder finder(holder, findOnlyVisible, this, zoom);
 
   // For each type X in the condition, ordered by priority:
   //  - look for the closest mark among the marks of the same type X.
@@ -2783,10 +2806,11 @@ void BookmarkManager::CreateCategories(KMLDataCollection && dataCollection, bool
     auto * group = GetBmCategory(groupId);
     group->SetFileName(fileName);
 
+    bool const isContactCategory = IsContactCategory(groupId);
     for (auto & bmData : fileData.m_bookmarksData)
     {
       auto * bm = CreateBookmark(std::move(bmData));
-      bm->Attach(groupId);
+      bm->Attach(groupId, isContactCategory);
       group->m_userMarks.insert(bm->GetId());
       m_changesTracker.OnAttachBookmark(bm->GetId(), groupId);
     }
@@ -3526,9 +3550,9 @@ void BookmarkManager::EditSession::DeleteUserMark(kml::MarkId markId)
   m_bmManager.DeleteUserMark(markId);
 }
 
-void BookmarkManager::EditSession::DeleteBookmark(kml::MarkId bmId)
+void BookmarkManager::EditSession::DeleteBookmark(kml::MarkId bmId, bool rememberForUndo)
 {
-  m_bmManager.DeleteBookmark(bmId);
+  m_bmManager.DeleteBookmark(bmId, rememberForUndo);
 }
 
 Track * BookmarkManager::EditSession::GetTrackForEdit(kml::TrackId trackId)
@@ -3605,6 +3629,9 @@ void BookmarkManager::EditSession::SetBookmarksAndTracksColor(kml::MarkIdCollect
   {
     if (auto * bookmark = m_bmManager.GetBookmarkForEdit(markId))
     {
+      // Contacts keeps its person badge; changing the color would replace it with a generic icon.
+      if (m_bmManager.IsContactCategory(bookmark->GetGroupId()))
+        continue;
       bookmark->SetColor(color);
       recoloredBookmark = true;
     }
@@ -3706,6 +3733,10 @@ void BookmarkManager::EditSession::SetCategoryCustomProperty(kml::MarkGroupId ca
 
 void BookmarkManager::EditSession::SetCategoryBookmarksColor(kml::MarkGroupId groupId, dp::Color color)
 {
+  // Contacts keeps its person badge; category recoloring must not replace it.
+  if (m_bmManager.IsContactCategory(groupId))
+    return;
+
   auto const & markIds = m_bmManager.GetUserMarkIds(groupId);
   for (auto const markId : markIds)
     if (auto * bm = m_bmManager.GetBookmarkForEdit(markId))
