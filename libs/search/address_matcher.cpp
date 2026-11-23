@@ -351,7 +351,16 @@ std::optional<AddressQuery> ParseAddressQuery(std::string const & query)
 {
   if (query.size() > 4096 || query.find_first_of("0123456789") == std::string::npos)
     return {};
-  auto const prepared = RemoveAddressDetails(query);
+  // Postal address lines delimit street, locality and country just like comma-separated fields.
+  std::string fields;
+  for (char c : query)
+  {
+    if (c != '\r' && c != '\n')
+      fields += c;
+    else if (!fields.empty() && fields.back() != ',')
+      fields += ',';
+  }
+  auto const prepared = RemoveAddressDetails(fields);
   auto parsed = ParseAddress(prepared);
   if (!parsed)
     return {};
