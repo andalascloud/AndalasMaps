@@ -156,7 +156,12 @@ public class ContactAddressTest
   {
     final ContactAddress australian =
         new ContactAddress("2/14 Smith Street, Sydney, Australia", "2/14 Smith Street", "Sydney", "", "AU");
-    assertEquals("14 Smith Street", australian.getNormalizedStreet());
+    assertEquals(List.of(new ContactAddress.SearchQuery("2/14 Smith Street, Sydney Australia", "2/14 Smith Street")),
+                 australian.getSearchQueries());
+    final ContactAddress inferred =
+        new ContactAddress("2a / 14 The Esplanade, Sydney, NSW, Australia", "2a / 14 The Esplanade", "Sydney", "NSW", "");
+    assertEquals(List.of(new ContactAddress.SearchQuery("2a/14 The Esplanade, Sydney NSW Australia", "2a/14 The Esplanade")),
+                 inferred.getSearchQueries());
     final ContactAddress czech =
         new ContactAddress("Křižíkova 12/1, Praha, Czechia", "Křižíkova 12/1", "Praha", "", "CZ");
     assertEquals("Křižíkova 12/1", czech.getNormalizedStreet());

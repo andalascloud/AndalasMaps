@@ -158,7 +158,7 @@ final class ContactAddress
   {
     if (!locality.isEmpty() && (!region.isEmpty() || !country.isEmpty()))
       return ContactAddressNormalizer.normalizeContext(
-          String.join(" ", locality, region, ContactAddressNormalizer.normalizeCountry(country)), mFormattingCountry);
+          String.join(" ", locality, region, mFormattingCountry), mFormattingCountry);
     String context = formattedResolutionContext();
     for (String component : List.of(region, ContactAddressNormalizer.normalizeCountry(country)))
     {

@@ -184,7 +184,7 @@ final class ContactAddressNormalizer
       return normalizeStreet(value);
     // Preserve native street order, names and compound house numbers. The shared native
     // matcher supplies multilingual token normalization instead of English substitutions.
-    return prepareAddress(value.split(",", 2)[0], country);
+    return prepareAddress(value.split(",", 2)[0], country).replaceAll("(\\d[A-Za-z]?)\\s*/\\s*(?=\\d)", "$1/");
   }
 
   static boolean looksLikeAddressQuery(@NonNull String value)
@@ -300,17 +300,17 @@ final class ContactAddressNormalizer
   @NonNull
   static String prepareAddress(@NonNull String value)
   {
-    return prepareAddress(value, true, false);
+    return prepareAddress(value, true);
   }
 
   @NonNull
   static String prepareAddress(@NonNull String value, @NonNull String country)
   {
-    return prepareAddress(value, usesNorthAmericanFormatting(country), country.equalsIgnoreCase("Australia"));
+    return prepareAddress(value, usesNorthAmericanFormatting(country));
   }
 
   @NonNull
-  private static String prepareAddress(@NonNull String value, boolean northAmerican, boolean australian)
+  private static String prepareAddress(@NonNull String value, boolean northAmerican)
   {
     String address = value.trim();
     while (address.length() >= 2 && isMatchingWrapper(address.charAt(0), address.charAt(address.length() - 1)))
@@ -318,8 +318,6 @@ final class ContactAddressNormalizer
     address = address.replaceAll("[\\r\\n]+", " ").replace('|', ' ');
     address = UNIT_PREFIX.matcher(address).replaceFirst("");
     address = BASEMENT_PREFIX.matcher(address).replaceFirst("");
-    if (australian)
-      address = address.replaceFirst("^\\d+[A-Za-z]?\\s*/\\s*(\\d+[A-Za-z]?)\\s+", "$1 ");
     address = TRAILING_UNIT.matcher(address).replaceFirst("");
     if (northAmerican)
       address = address.replaceFirst("(?i)^(\\d{4,6})\\s*-\\s*(\\d{1,3}[A-Za-z]?)\\s+(st(?:reet)?|ave(?:nue)?)\\b",
