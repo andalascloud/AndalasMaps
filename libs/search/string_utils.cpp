@@ -78,11 +78,12 @@ std::string RemoveAddressDetails(std::string const & query)
   // slash forms part of the civic house identifier.
   static std::regex const australianUnit(R"(^\s*[0-9]+[a-z]?\s*/\s*([0-9]+[a-z]?)\s+)", std::regex::icase);
   static std::regex const australia(R"(\bAustralia\s*$)", std::regex::icase);
-  if (std::regex_search(value, australia))
-    value = std::regex_replace(value, australianUnit, "$1 ");
   std::smatch match;
+  bool const hasAustralianUnit = std::regex_search(value, australia) && std::regex_search(value, match, australianUnit);
+  if (hasAustralianUnit)
+    value.replace(0, match.length(), match[1].str() + " ");
   if (!std::regex_search(value, match, street))
-    return query;
+    return hasAustralianUnit ? value : query;
 
   auto const streetEnd = static_cast<size_t>(match.length());
   auto context = std::regex_replace(value.substr(streetEnd), unitSuffix, " ");

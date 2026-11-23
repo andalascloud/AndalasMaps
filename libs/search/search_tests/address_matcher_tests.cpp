@@ -166,6 +166,7 @@ UNIT_TEST(AddressMatcher_InternationalHouseOrderAndPostcodes)
     Result::AddressIdentity m_identity;
   };
   for (auto const & example : std::vector<Example>{
+           {"Pariser Platz 1\r\n10117 Berlin\nGermany", "Pariser Platz, 1", "Berlin, Germany", {"1", "Pariser Platz"}},
            {"Hauptstraße 12a, 10115 Berlin, Germany", "Hauptstraße, 12A", "Berlin, Germany", {"12A", "Hauptstraße"}},
            {"12 Rue de Rivoli, 75001 Paris, France", "Rue de Rivoli, 12", "Paris, France", {"12", "Rue de Rivoli"}},
            {"Calle Mayor 12, 28013 Madrid, Spain", "Calle Mayor, 12", "Madrid, Spain", {"12", "Calle Mayor"}},
@@ -192,6 +193,10 @@ UNIT_TEST(AddressMatcher_InternationalHouseOrderAndPostcodes)
   for (auto const & query : {"12 Rue de Rivoli", "12a Rue de Rivoli", "12a Calle Mayor", "Calle Mayor 12",
                              "Hauptstraße 12a", "улица Ленина 12"})
     TEST(IsAddressQuery(query), (query));
+  auto const esplanade = MakeAddress(0, 0, "The Esplanade, 14", "Sydney, Australia", {"14", "The Esplanade"});
+  TEST(IsAddressResultMatchingQuery("2/14 The Esplanade, Sydney, Australia", esplanade), ());
+  TEST(IsAddressResultMatchingQuery("2/14 The Esplanade, Sydney Australia", esplanade, "2/14 The Esplanade"), ());
+  TEST(!IsAddressResultMatchingQuery("2/14 The Esplanade, Sydney", esplanade), ());
   TEST(!IsAddressQuery("Studio 54"), ());
   TEST(!ParseAddressQuery("SW1A 2AA"), ());
   TEST(!ParseAddressQuery("Hauptstraße 999999999999999999999999"), ());
