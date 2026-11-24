@@ -244,6 +244,27 @@ public class RoutingControllerRecoveryTest
   }
 
   @Test
+  public void savedWaterTrackIsViewOnlyAndOrdinaryTrackUsesItsFollowProfile() throws Exception
+  {
+    try (ImportedTrack water = new ImportedTrack("water"))
+    {
+      onMain(() -> {
+        assertEquals(FollowTrackResult.UnsupportedProfile, mController.navigateTrack(water.id));
+        assertFalse(mController.isFollowingTrack());
+      });
+    }
+    try (ImportedTrack ordinary = new ImportedTrack("pedestrian"))
+    {
+      onMain(() -> {
+        mController.setRouterType(Router.Water);
+        assertEquals(FollowTrackResult.Ok, mController.navigateTrack(ordinary.id));
+        assertEquals(Router.Pedestrian, mController.getLastRouterType());
+        assertFalse(mController.isWaterRouterType());
+      });
+    }
+  }
+
+  @Test
   public void acceptedTrackBuildReplacesTheSavedHostsCancelledResult() throws Exception
   {
     try (ImportedTrack track = new ImportedTrack())
@@ -500,14 +521,22 @@ public class RoutingControllerRecoveryTest
 
     ImportedTrack() throws Exception
     {
+      this("");
+    }
+
+    ImportedTrack(String profile) throws Exception
+    {
       try (FileWriter writer = new FileWriter(source))
       {
         writer.write(String.format("""
             <kml xmlns="http://www.opengis.net/kml/2.2"><Document>
             <name>%s</name><Placemark><name>Trail 🏔</name>
             <LineString><coordinates>0,51.47,100 0,51.48,200</coordinates></LineString>
-            </Placemark></Document></kml>
-            """, source.getName()));
+            %s</Placemark></Document></kml>
+            """, source.getName(),
+                                   profile.isEmpty() ? ""
+                                                     : "<ExtendedData xmlns:mwm=\"https://omaps.app\"><mwm:routerType>"
+                                                           + profile + "</mwm:routerType></ExtendedData>"));
       }
       onMain(() -> BookmarkManager.INSTANCE.loadBookmarksFile(source.getAbsolutePath(), false));
       await("Track was not imported", () -> category() != null && category().getTracksCount() == 1);

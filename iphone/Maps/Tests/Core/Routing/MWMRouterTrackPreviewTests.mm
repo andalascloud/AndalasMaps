@@ -64,19 +64,36 @@
 
 - (kml::TrackId)createPreviewWithFinishAltitude:(geometry::Altitude)finishAltitude
 {
+  auto const id = [self selectTrackWithProfile:"pedestrian" finishAltitude:finishAltitude];
+  XCTAssertEqual([MWMRouter navigateTrack:id], MWMFollowTrackResultOk);
+  return id;
+}
+
+- (kml::TrackId)selectTrackWithProfile:(char const *)profile finishAltitude:(geometry::Altitude)finishAltitude
+{
   auto & bookmarks = GetFramework().GetBookmarkManager();
   auto const start = mercator::FromLatLon(45.0, 19.0);
   kml::TrackData data;
   data.m_layers.emplace_back();
   data.m_geometry.AddLine({{start, 100}, {mercator::FromLatLon(45.01, 19.0), finishAltitude}});
   data.m_geometry.AddTimestamps({});
-  data.m_routerType = "pedestrian";
+  data.m_routerType = profile;
   auto const id = bookmarks.GetEditSession().CreateTrack(std::move(data))->GetId();
   bookmarks.GetEditSession().AttachTrack(id, m_categoryId);
   bookmarks.SetTrackSelectionInfo({id, start, 0.0}, false);
   bookmarks.MyPositionMark().SetUserPosition(start, true);
-  XCTAssertEqual([MWMRouter navigateTrack:id], MWMFollowTrackResultOk);
   return id;
+}
+
+- (void)testSavedWaterTrackRejectsNavigationAndOrdinaryTrackCanFollowWaterSelection
+{
+  auto const water = [self selectTrackWithProfile:"water" finishAltitude:110];
+  XCTAssertEqual([MWMRouter navigateTrack:water], MWMFollowTrackResultUnsupportedProfile);
+  XCTAssertFalse([MWMRouter hasTrackNavigationSession]);
+  [MWMRouter setType:MWMRouterTypeWater];
+  [self createPreview];
+  [self waitForPreview];
+  XCTAssertEqual([MWMRouter renderType], MWMRouterTypePedestrian);
 }
 
 - (void)waitForPreview

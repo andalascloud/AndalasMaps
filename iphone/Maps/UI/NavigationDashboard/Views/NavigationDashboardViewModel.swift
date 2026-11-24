@@ -56,6 +56,8 @@ extension NavigationDashboard.ViewModel {
   }
 
   var isBottomActionsMenuHidden: Bool { presentationStep == .hidden }
+  var isStartButtonHidden: Bool { routerType == .water }
+  var isWaterCalculating: Bool { routerType == .water && dashboardState == .planning }
 
   var isTransportSelectionEnabled: Bool {
     guard planningMode == .navigateTrack, dashboardState == .planning else { return true }
@@ -76,6 +78,9 @@ extension NavigationDashboard.ViewModel {
   }
 
   var startButtonState: StartRouteButton.State {
+    if routerType == .water {
+      return .disabled
+    }
     if !routePoints.hasStartAndFinish ||
       dashboardState == .error {
       return .disabled
@@ -91,7 +96,7 @@ extension NavigationDashboard.ViewModel {
     if dashboardState == .error, let errorMessage {
       return .error(errorMessage)
     }
-    if progress < 1 {
+    if progress < 1 || dashboardState == .planning {
       return .loading
     }
     return .estimates(estimates)
