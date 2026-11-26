@@ -171,11 +171,14 @@ recreation; the host still owns its controls, listener cleanup, and any backgrou
 service.
 
 To navigate a saved track, select a point on it and call
-`RoutingController.navigateTrack(trackId)`: it previews the connected section from
-that point without downloaded road maps. Adjust the preview with
-`setFollowTrackProfile(router)` and `updateFollowedTrackEntryAt(distanceMeters)`, then
-call `start()` after the build succeeds. Navigation can begin after the host stops;
-see `Container.onNavigationStartPending()`. Deleting the source track ends its route.
+`RoutingController.navigateTrack(trackId)`. A nearby GPS fix sets the entry.
+When GPS is unavailable or the user is farther away, the preview uses the
+selected point. The first usable nearby fix updates the entry automatically.
+Call `setFollowTrackProfile(router)` to change the travel mode. A chart pick
+with `updateFollowedTrackEntryAt(distanceMeters)` can select another visit
+at the join or inspect elevation elsewhere. Call `start()` when the preview
+is ready. Navigation can begin after the host stops. See
+`Container.onNavigationStartPending()`. Deleting the source track ends its route.
 
 ## Release consumers
 

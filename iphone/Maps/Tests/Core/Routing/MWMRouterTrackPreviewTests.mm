@@ -220,6 +220,28 @@
   XCTAssertEqual(bookmarks.GetElevationActivePoint(id), finishDistance * 0.8);
 }
 
+- (void)testNearbyFixMovesTheEntryAndChartInspectionKeepsThePreviewReady
+{
+  auto & manager = GetFramework().GetRoutingManager();
+  SCOPE_GUARD(clearFix, [&] { manager.OnLocationLost(); });
+  auto const id = [self createPreview];
+  [self waitForPreview];
+  manager.OnLocationUpdate(
+      {.m_source = location::EUser, .m_latitude = 45.008, .m_longitude = 19.0, .m_horizontalAccuracy = 5.0});
+  double const length = GetFramework().GetBookmarkManager().GetTrack(id)->GetLengthMeters();
+  XCTAssertTrue(manager.IsRouteBuilding());
+  auto const state = MWMNavigationDashboardManager.sharedManager.state;
+  XCTAssertEqual([MWMRouter updateFollowedTrackEntryAtDistance:length * 0.2], MWMFollowTrackResultOk);
+  XCTAssertEqual(MWMNavigationDashboardManager.sharedManager.state, state);
+  [self waitForPreview];
+  double const join = [MWMRouter followedTrackInfo].entryDistanceMeters;
+  XCTAssertEqualWithAccuracy(join, length * 0.8, 0.1);
+  XCTAssertEqual([MWMRouter updateFollowedTrackEntryAtDistance:length * 0.2], MWMFollowTrackResultOk);
+  XCTAssertTrue([MWMRouter isRouteBuilt]);
+  XCTAssertEqual(MWMNavigationDashboardManager.sharedManager.state, MWMNavigationDashboardStateReady);
+  XCTAssertEqual([MWMRouter routeElevationActivePointDistance].doubleValue, join);
+}
+
 - (void)testDeletionCancelsPreviewWhileItsBuildIsPending
 {
   auto const trackId = [self createPreview];

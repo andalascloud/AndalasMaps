@@ -32,6 +32,7 @@ import app.organicmaps.sdk.bookmarks.data.BookmarkCategory;
 import app.organicmaps.sdk.bookmarks.data.BookmarkManager;
 import app.organicmaps.sdk.bookmarks.data.DataChangedListener;
 import app.organicmaps.sdk.bookmarks.data.MapObject;
+import app.organicmaps.sdk.location.LocationState;
 import app.organicmaps.sdk.routing.FollowTrackResult;
 import app.organicmaps.sdk.routing.ResultCodes;
 import app.organicmaps.sdk.routing.RouteMarkData;
@@ -276,7 +277,10 @@ public class RoutingControllerRecoveryTest
   {
     try (ImportedTrack track = new ImportedTrack())
     {
-      onMain(() -> assertEquals(FollowTrackResult.Ok, mController.navigateTrack(track.id)));
+      onMain(() -> {
+        LocationState.nativeOnLocationError(LocationState.ERROR_GPS_OFF);
+        assertEquals(FollowTrackResult.Ok, mController.navigateTrack(track.id));
+      });
       await("Track preview did not finish building", mController::isBuilt);
       onMain(() -> assertEquals(FollowTrackResult.Ok, mController.updateFollowedTrackEntryAt(400.0)));
       await("Entry update did not finish building", mController::isBuilt);
@@ -300,6 +304,64 @@ public class RoutingControllerRecoveryTest
       onMain(() -> {
         assertFalse(mController.getFollowedTrackInfo().isReversed());
         assertEquals(0.0, mController.getFollowedTrackInfo().getEntryDistanceMeters(), 0.0);
+      });
+    }
+  }
+
+  @Test
+  public void firstNearbyFixUpdatesTheBuiltPreviewAndChartInspectionKeepsItReady() throws Exception
+  {
+    try (ImportedTrack track = new ImportedTrack("0,51.3,100 0,51.31,200");
+         ActivityScenario<MwmActivity> ignored = launchMap())
+    {
+      onMain(() -> {
+        sendLocation(51.29);
+        assertEquals(FollowTrackResult.Ok, mController.navigateTrack(track.id));
+      });
+      await("Track preview did not finish building", mController::isBuilt);
+      onMain(() -> {
+        assertEquals(0.0, mController.getFollowedTrackInfo().getEntryDistanceMeters(), 0.0);
+        sendLocation(51.308);
+        assertTrue(Framework.nativeIsRouteBuilding());
+        final boolean wasBuilding = mController.isBuilding();
+        assertEquals(FollowTrackResult.Ok, mController.updateFollowedTrackEntryAt(200.0));
+        assertEquals("Inspecting the chart must preserve the existing build state", wasBuilding,
+                     mController.isBuilding());
+      });
+      await(
+          "The first nearby fix did not update the preview",
+          () -> Framework.nativeIsRouteBuilt() && mController.getFollowedTrackInfo().getEntryDistanceMeters() > 800.0);
+      onMain(() -> {
+        final double join = mController.getFollowedTrackInfo().getEntryDistanceMeters();
+        assertEquals(FollowTrackResult.Ok, mController.updateFollowedTrackEntryAt(200.0));
+        assertTrue(mController.isBuilt());
+        assertTrue(Framework.nativeIsRouteBuilt());
+        assertEquals(join, mController.getFollowedTrackInfo().getEntryDistanceMeters(), 0.0);
+      });
+    }
+  }
+
+  @Test
+  public void firstNearbyFixDuringOpeningBuildShowsTheTrackOverview() throws Exception
+  {
+    try (ImportedTrack track = new ImportedTrack("0,51.3,100 0,51.31,200");
+         ActivityScenario<MwmActivity> ignored = launchMap())
+    {
+      onMain(() -> {
+        sendLocation(51.29);
+        Framework.nativeStopLocationFollow();
+        Framework.nativeSetViewportCenter(50.0, 8.0, 14);
+      });
+      await("The map did not move away from the track",
+            () -> Math.abs(Framework.nativeGetScreenRectCenter()[1] - 8.0) < 0.01);
+      onMain(() -> {
+        assertEquals(FollowTrackResult.Ok, mController.navigateTrack(track.id));
+        assertTrue(Framework.nativeIsRouteBuilding());
+        sendLocation(51.308);
+      });
+      await("The opening overview did not frame the remaining track", () -> {
+        final double[] center = Framework.nativeGetScreenRectCenter();
+        return Framework.nativeIsRouteBuilt() && Math.abs(center[0] - 51.309) < 0.01 && Math.abs(center[1]) < 0.01;
       });
     }
   }
@@ -361,7 +423,10 @@ public class RoutingControllerRecoveryTest
   {
     try (ImportedTrack track = new ImportedTrack(); ActivityScenario<MwmActivity> scenario = launchMap())
     {
-      onMain(() -> assertEquals(FollowTrackResult.Ok, mController.navigateTrack(track.id)));
+      onMain(() -> {
+        sendLocation(51.3);
+        assertEquals(FollowTrackResult.Ok, mController.navigateTrack(track.id));
+      });
       await("Track preview did not finish building", mController::isBuilt);
       scenario.onActivity(activity -> {
         final View reverse = activity.findViewById(R.id.reverse_route_btn);
@@ -543,19 +608,24 @@ public class RoutingControllerRecoveryTest
   private void startTrackNavigation(ImportedTrack track) throws Exception
   {
     onMain(() -> {
-      final Location fix = new Location(LocationManager.GPS_PROVIDER);
-      fix.setLatitude(51.47);
-      fix.setLongitude(0);
-      fix.setAccuracy(1);
-      fix.setTime(System.currentTimeMillis());
-      fix.setElapsedRealtimeNanos(SystemClock.elapsedRealtimeNanos());
-      mApplication.getLocationHelper().onLocationChanged(fix);
+      sendLocation(51.47);
       assertEquals(FollowTrackResult.Ok, mController.navigateTrack(track.id));
     });
     await("Track preview did not finish building", mController::isBuilt);
     onMain(mController::start);
     await("Track navigation did not start", mController::isNavigating);
     onMain(() -> assertTrue(Framework.nativeIsRoutingFollowing()));
+  }
+
+  private void sendLocation(double latitude)
+  {
+    final Location fix = new Location(LocationManager.GPS_PROVIDER);
+    fix.setLatitude(latitude);
+    fix.setLongitude(0);
+    fix.setAccuracy(1);
+    fix.setTime(System.currentTimeMillis());
+    fix.setElapsedRealtimeNanos(SystemClock.elapsedRealtimeNanos());
+    mApplication.getLocationHelper().onLocationChanged(fix);
   }
 
   private static DataChangedListener getBookmarksListener(RoutingController controller)

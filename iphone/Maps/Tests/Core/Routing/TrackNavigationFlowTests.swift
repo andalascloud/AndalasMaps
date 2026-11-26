@@ -204,11 +204,9 @@ final class TrackNavigationFlowTests: XCTestCase {
   }
 
   func testCancelledTrackSelectionRestoresAcceptedEntryWithoutRebuilding() throws {
-    let view = NavigationDashboardViewController()
-    let presenter = NavigationDashboard.Presenter(view: view)
+    let renderer = DashboardRendererSpy()
+    let presenter = NavigationDashboard.Presenter(view: renderer)
     let interactor = NavigationDashboard.Interactor(presenter: presenter, router: MockRouter.self)
-    view.interactor = interactor
-    view.loadViewIfNeeded()
     MockRouter.trackMode = true
     MockRouter.acceptedEntryDistance = 250
     MockRouter.elevationInfo = MockElevationProfileData()
@@ -227,9 +225,7 @@ final class TrackNavigationFlowTests: XCTestCase {
     interactor.stateReady()
     interactor.updateMapPoint(distance: 700)
     interactor.didCancelSelectingPoint()
-    let model = try XCTUnwrap(Mirror(reflecting: presenter).children
-      .first { $0.label == "viewModel" }?.value as? NavigationDashboard.ViewModel)
-    XCTAssertEqual(model.routeElevationActivePointDistance, 250)
+    XCTAssertEqual(try XCTUnwrap(renderer.model).routeElevationActivePointDistance, 250)
     XCTAssertTrue(MockRouter.entryRequests.isEmpty)
     XCTAssertEqual(MockRouter.profile, .bicycle)
 
@@ -237,6 +233,11 @@ final class TrackNavigationFlowTests: XCTestCase {
     DispatchQueue.main.async { restored.fulfill() }
     wait(for: [restored], timeout: 1)
     XCTAssertEqual(MockRouter.mapPointRequests.last, 250)
+
+    // A first nearby fix can change the accepted entry while the dashboard is already ready.
+    MockRouter.acceptedEntryDistance = 800
+    interactor.stateReady()
+    XCTAssertEqual(try XCTUnwrap(renderer.model).routeElevationActivePointDistance, 800)
   }
 
   func testStateClosedClearsSelectionBeforeInvalidatingAndCancelsDeferredRestore() throws {

@@ -273,6 +273,9 @@ extension NavigationDashboard.Interactor: NavigationDashboardView {
   func stateReady() {
     guard isValid else { return }
     process(.updateState(.ready))
+    if let entry = router.routeElevationActivePointDistance() {
+      routeElevationActivePointDistance = entry.doubleValue
+    }
     buildElevationInfoIfNeeded()
     process(.updateRoutePoints)
   }

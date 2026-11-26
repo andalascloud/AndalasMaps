@@ -761,7 +761,9 @@ public class RoutingController
   }
 
   /**
-   * Rebuilds from a finite distance along the full track, preserving profile and viewport.
+   * Selects an entry by distance along the full track. With a nearby fix, a pick at another location only inspects
+   * the chart and returns {@link FollowTrackResult#Ok} without starting a build. A pick at the join can distinguish
+   * overlapping visits.
    * Keeps the chosen direction unless only the opposite side of the entry has geometry.
    * Requires {@link #isFollowingTrack()}. Refusals leave the preview and selection unchanged.
    */
@@ -770,6 +772,8 @@ public class RoutingController
   {
     final FollowTrackResult result =
         FollowTrackResult.valueOf(Framework.nativeUpdateFollowedTrackEntryAt(distanceMeters));
+    if (result == FollowTrackResult.Unchanged)
+      return FollowTrackResult.Ok;
     if (result == FollowTrackResult.Ok)
       onCoreStartedTrackBuild();
     return result;
@@ -946,6 +950,8 @@ public class RoutingController
       if (isFollowingTrack())
       {
         final FollowTrackResult result = resetFollowedTrackToPlanning();
+        if (result == FollowTrackResult.NoRemainingGeometry)
+          return cancel();
         Assert.debug(result == FollowTrackResult.Ok, "Unexpected track reset result: " + result);
         onCoreStartedTrackBuild();
       }
