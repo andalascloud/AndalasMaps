@@ -9,9 +9,23 @@
 
 #include "geometry/any_rect2d.hpp"
 
+#include <compare>
 #include <optional>
 #include <string>
 #include <utility>
+
+class Track;
+
+struct TrackSourcePosition
+{
+  size_t m_line = 0;
+  size_t m_segment = 0;
+  double m_fraction = 0.0;
+
+  auto operator<=>(TrackSourcePosition const &) const = default;
+  m2::PointD GetPoint(Track const & track) const;
+  double GetDistanceMeters(Track const & track) const;
+};
 
 class Track : public df::UserLineMark
 {
@@ -87,6 +101,9 @@ public:
     // Mercator square distance, used to select nearest track.
     double m_squareDist = std::numeric_limits<double>::max();
   };
+
+  // Returns the first strictly closest real segment and reduces the Mercator distance bound when found.
+  std::optional<TrackSourcePosition> FindClosestSegment(m2::PointD const & point, double & squareDistance) const;
 
   // Caller must pre-set info.m_squareDist to the max allowed squared mercator distance to
   // accept a segment. The default (std::numeric_limits<double>::max()) means no threshold.

@@ -1,16 +1,14 @@
 #include "map/track_follow_data.hpp"
 
-#include "map/track.hpp"
-
 #include "geometry/mercator.hpp"
 
 #include "base/assert.hpp"
 #include "base/logging.hpp"
-#include "base/math.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <limits>
 #include <unordered_map>
 #include <utility>
 
@@ -168,12 +166,6 @@ std::optional<StopProjection> ProjectStop(kml::MultiGeometry const & geometry, m
 }
 }  // namespace
 
-double TrackSourcePosition::GetDistanceMeters(Track const & track) const
-{
-  auto const & lengths = track.GetCumulativeLengths()[m_line];
-  return std::lerp(lengths[m_segment], lengths[m_segment + 1], m_fraction);
-}
-
 TrackSourcePosition ResolveTrackEntryAt(Track const & track, double distanceFromBeginningM)
 {
   auto const & lengths = track.GetCumulativeLengths();
@@ -191,17 +183,21 @@ TrackSourcePosition ResolveTrackEntryAt(Track const & track, double distanceFrom
   return NormalizePosition(track.GetData().m_geometry, {lineIndex, segment, fraction});
 }
 
-std::optional<TrackSourcePosition> ResolveTrackEntry(Track const & track, m2::PointD const & selectedPoint,
-                                                     double distanceFromBeginningM)
+namespace
 {
-  if (distanceFromBeginningM < 0.0)
-    return std::nullopt;
-
+// Among visits to the same coordinate, choose the one closest to the selected source distance.
+std::optional<TrackSourcePosition> FindTrackVisit(Track const & track, m2::PointD const & point, double distanceM,
+                                                  double toleranceM, size_t firstLine, size_t endLine)
+{
   auto const & lengths = track.GetCumulativeLengths();
   auto const & geometry = track.GetData().m_geometry;
-  auto const endsTooEarly = [&](double end) { return distanceFromBeginningM - end > kSelectionDistanceToleranceM; };
-  auto const firstLine = std::ranges::partition_point(lengths, endsTooEarly, [](auto const & l) { return l.back(); });
-  for (auto lineIt = firstLine; lineIt != lengths.end(); ++lineIt)
+  auto const endsTooEarly = [&](double end) { return distanceM - end > toleranceM; };
+  auto const last = lengths.begin() + endLine;
+  auto lineIt = std::ranges::partition_point(lengths.begin() + firstLine, last, endsTooEarly,
+                                             [](auto const & l) { return l.back(); });
+  std::optional<TrackSourcePosition> best;
+  double bestDifference = std::numeric_limits<double>::max();
+  for (; lineIt != last; ++lineIt)
   {
     size_t const lineIndex = lineIt - lengths.begin();
     auto const & line = geometry.m_lines[lineIndex];
@@ -210,22 +206,102 @@ std::optional<TrackSourcePosition> ResolveTrackEntry(Track const & track, m2::Po
     for (auto end = firstEnd; end != lineLengths.end(); ++end)
     {
       double const start = *std::prev(end);
-      if (start - distanceFromBeginningM > kSelectionDistanceToleranceM)
-        return std::nullopt;
+      if (start - distanceM > toleranceM)
+        return best;
       size_t const segment = end - lineLengths.begin() - 1;
       auto const & from = line[segment].GetPoint();
       auto const & to = line[segment + 1].GetPoint();
-      double const fraction = mercator::SegmentProjectionFraction(from, to, selectedPoint);
+      double const fraction = mercator::SegmentProjectionFraction(from, to, point);
       auto const projected = mercator::Interpolate(from, to, fraction);
-      double const selectedDistance = std::lerp(start, *end, fraction);
-      if (SamePosition(projected, selectedPoint) &&
-          AlmostEqualAbs(distanceFromBeginningM, selectedDistance, kSelectionDistanceToleranceM))
+      double const difference = std::abs(distanceM - std::lerp(start, *end, fraction));
+      if (difference <= toleranceM && difference < bestDifference && SamePosition(projected, point))
       {
-        return NormalizePosition(geometry, {lineIndex, segment, fraction});
+        best = NormalizePosition(geometry, {lineIndex, segment, fraction});
+        if (difference == 0.0)
+          return best;
+        bestDifference = difference;
       }
     }
   }
-  return std::nullopt;
+  return best;
+}
+}  // namespace
+
+std::optional<TrackSourcePosition> ResolveTrackEntry(Track const & track, m2::PointD const & selectedPoint,
+                                                     double distanceFromBeginningM)
+{
+  if (distanceFromBeginningM < 0.0)
+    return std::nullopt;
+  return FindTrackVisit(track, selectedPoint, distanceFromBeginningM, kSelectionDistanceToleranceM, 0,
+                        track.GetData().m_geometry.m_lines.size());
+}
+
+std::optional<TrackSourcePosition> FindNearbyTrackEntry(Track const & track, m2::PointD const & fix, double thresholdM)
+{
+  // The circumscribed Mercator box provides a conservative bound. Check ground distance at its closest point.
+  auto const box = mercator::RectByCenterXYAndSizeInMeters(fix, thresholdM);
+  double squareDistance = box.LeftBottom().SquaredLength(box.RightTop());
+  auto const nearest = track.FindClosestSegment(fix, squareDistance);
+  if (!nearest || mercator::DistanceOnEarth(fix, nearest->GetPoint(track)) > thresholdM)
+    return std::nullopt;
+  return NormalizePosition(track.GetData().m_geometry, *nearest);
+}
+
+std::optional<TrackSourcePosition> ProjectSelectedTrackVisit(Track const & track, TrackSourcePosition const & selection,
+                                                             TrackSourcePosition const & nearest, double thresholdM)
+{
+  auto const join = nearest.GetPoint(track);
+  auto const selectedPoint = selection.GetPoint(track);
+  if (SamePosition(join, selectedPoint))
+    return selection;
+  if (mercator::DistanceOnEarth(join, selectedPoint) > thresholdM)
+    return std::nullopt;
+  // A nearby GPS join can be on an adjacent sample of the selected visit, including across joined source lines.
+  auto const & geometry = track.GetData().m_geometry;
+  auto const & lengths = track.GetCumulativeLengths();
+  double const distanceM = selection.GetDistanceMeters(track);
+  size_t first = selection.m_line, last = first;
+  while (first > 0 && distanceM - lengths[first].front() <= thresholdM && IsJoinedToNext(geometry, first - 1))
+    --first;
+  while (lengths[last].back() - distanceM <= thresholdM && IsJoinedToNext(geometry, last))
+    ++last;
+  return FindTrackVisit(track, join, distanceM, thresholdM, first, last + 1);
+}
+
+TrackSourcePosition AdvanceTrackEntry(Track const & track, TrackSourcePosition entry, bool reverse, double distanceMerc)
+{
+  auto const & geometry = track.GetData().m_geometry;
+  while (distanceMerc > 0.0)
+  {
+    auto const & line = geometry.m_lines[entry.m_line];
+    auto const from = line[entry.m_segment].GetPoint();
+    auto const to = mercator::NearestWorldCopy(line[entry.m_segment + 1].GetPoint(), from.x);
+    double const length = from.Length(to);
+    double const remaining = length * (reverse ? entry.m_fraction : 1.0 - entry.m_fraction);
+    if (distanceMerc < remaining)
+    {
+      entry.m_fraction += (reverse ? -distanceMerc : distanceMerc) / length;
+      break;
+    }
+    distanceMerc -= remaining;
+    if (reverse)
+    {
+      if (entry.m_segment > 0)
+        --entry.m_segment;
+      else if (entry.m_line > 0 && IsJoinedToNext(geometry, entry.m_line - 1))
+        entry.m_segment = geometry.m_lines[--entry.m_line].size() - 2;
+      else
+        return {entry.m_line, 0, 0.0};
+      entry.m_fraction = 1.0;
+    }
+    else
+    {
+      entry = VertexPosition(geometry, entry.m_line, entry.m_segment + 1);
+      if (entry.m_fraction == 1.0)
+        return entry;
+    }
+  }
+  return NormalizePosition(geometry, entry);
 }
 
 bool HasRemainingTrackGeometry(kml::MultiGeometry const & geometry, TrackSourcePosition const & entry, bool reverse)
@@ -351,6 +427,25 @@ TrackSourcePosition GetTrackSectionEnd(kml::MultiGeometry const & geometry, size
   return {line, geometry.m_lines[line].size() - 2, 1.0};
 }
 }  // namespace
+
+std::optional<TrackSourcePosition> GetFreshLoopEntry(Track const & track, TrackSourcePosition const & entry,
+                                                     bool reverse, m2::PointD const & fix, double thresholdM)
+{
+  auto const & geometry = track.GetData().m_geometry;
+  auto const origin = GetTrackSectionEnd(geometry, entry.m_line, !reverse);
+  auto const finish = GetTrackSectionEnd(geometry, entry.m_line, reverse);
+  double const originM = origin.GetDistanceMeters(track), finishM = finish.GetDistanceMeters(track);
+  double const toleranceM = std::min(thresholdM, kMaxLoopGapFraction * std::abs(finishM - originM));
+  double const entryM = entry.GetDistanceMeters(track);
+  // An outgoing projection already offers the remaining lap. Pair its exact trailhead for Reverse.
+  if (entry != origin && std::abs(entryM - finishM) > toleranceM)
+    return std::nullopt;
+  auto const startPoint = origin.GetPoint(track), endPoint = finish.GetPoint(track);
+  if (mercator::DistanceOnEarth(startPoint, endPoint) > toleranceM ||
+      mercator::DistanceOnEarth(startPoint, fix) > thresholdM || mercator::DistanceOnEarth(endPoint, fix) > thresholdM)
+    return std::nullopt;
+  return origin;
+}
 
 std::optional<TrackSourcePosition> GetReverseTrackEntry(Track const & track, TrackSourcePosition const & entry,
                                                         TrackSourcePosition const & destination)

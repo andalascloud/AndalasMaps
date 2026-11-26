@@ -172,7 +172,8 @@ service.
 
 To navigate a saved track, select a point on it and call
 `RoutingController.navigateTrack(trackId)`: it previews the connected section from
-that point without downloaded road maps. Adjust the preview with
+a nearby GPS fix, or from the selected point when away or without a usable fix. The first usable fix updates the
+preview automatically. A chart pick at the physical join can select a different visit. Adjust the preview with
 `setFollowTrackProfile(router)` and `updateFollowedTrackEntryAt(distanceMeters)`, then
 call `start()` after the build succeeds. Navigation can begin after the host stops;
 see `Container.onNavigationStartPending()`. Deleting the source track ends its route.

@@ -237,6 +237,13 @@ final class TrackNavigationFlowTests: XCTestCase {
     DispatchQueue.main.async { restored.fulfill() }
     wait(for: [restored], timeout: 1)
     XCTAssertEqual(MockRouter.mapPointRequests.last, 250)
+
+    // A first nearby fix can change the accepted entry while the dashboard is already ready.
+    MockRouter.acceptedEntryDistance = 800
+    interactor.stateReady()
+    let refreshed = try XCTUnwrap(Mirror(reflecting: presenter).children
+      .first { $0.label == "viewModel" }?.value as? NavigationDashboard.ViewModel)
+    XCTAssertEqual(refreshed.routeElevationActivePointDistance, 800)
   }
 
   func testStateClosedClearsSelectionBeforeInvalidatingAndCancelsDeferredRestore() throws {

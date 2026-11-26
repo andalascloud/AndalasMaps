@@ -146,7 +146,7 @@ static MWMFollowTrackResult ToMWMFollowTrackResult(FollowTrackResult result)
 // The accepted core build reports ready/error/progress through the regular routing callbacks.
 static MWMFollowTrackResult OnFollowTrackResult(FollowTrackResult result)
 {
-  if (result == FollowTrackResult::Ok)
+  if (result == FollowTrackResult::Ok && GetFramework().GetRoutingManager().IsRouteBuilding())
     [[MWMMapViewControlsManager manager] onRouteRebuild];
   return ToMWMFollowTrackResult(result);
 }

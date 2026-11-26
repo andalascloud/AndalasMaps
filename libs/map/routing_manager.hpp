@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -213,14 +214,16 @@ public:
   void FollowRoute();
   void CloseRouting(bool removeRoutePoints);
 
-  // Follow the connected section forward, or backward when only that direction has geometry.
+  // A nearby fix joins the connected section at its projection, otherwise approach the selected entry.
+  // Follow forward, or backward when only that direction has geometry.
   // Active navigation and a pending Start return Busy.
   // Requires routing initialization. Accepted previews use the route-building callbacks.
   FollowTrackResult NavigateTrack(kml::TrackId trackId);
   // The following preview edits require a captured session.
-  // Return to the captured preview.
+  // Resume at confirmed progress with unpassed stops. NoRemainingGeometry at the exact finish.
   FollowTrackResult ResetFollowedTrackToPlanning();
-  // Clamp a finite source distance to the full track, preserving profile and viewport.
+  // With nearby GPS, chart picks can distinguish visits at the join or inspect elsewhere without a build.
+  // Otherwise clamp the requested source distance to the full track, preserving profile and viewport.
   // Keep the direction unless only the opposite side of the entry has geometry.
   // At a gap the exact accepted distance keeps its section. Other distances use source order.
   FollowTrackResult UpdateFollowedTrackEntryAt(double distanceM);
@@ -378,12 +381,9 @@ private:
   FollowTrackResult CheckFollowedTrackEditable(bool allowFollowing = false) const;
   bool IsPreviewingTrack() const { return m_followSession && !IsRoutingFollowing(); }
 
-  FollowTrackResult BuildFollowedTrack(std::shared_ptr<Track const> source, TrackSourcePosition entry,
-                                       double entryDistanceM, bool reverse, routing::RouterType profile,
-                                       bool keepViewport = false);
   void InstallFollowedTrack(FollowSession session, bool keepViewport = false);
   void BuildFollowedTrackPreview(std::optional<m2::PointD> const & position);
-  std::optional<m2::PointD> GetLatestGpsPosition() const;
+  bool RefreshFollowedTrackPreview(location::GpsInfo const & fix, bool starting);
 
   struct RoadInfo
   {
@@ -460,13 +460,29 @@ private:
 
   struct FollowSession
   {
+    enum class EntryOrigin
+    {
+      Selection,
+      NearbyFix,
+      Progress
+    };
+    double MatchingThresholdM() const;
+    bool Prepare(TrackSourcePosition entry, double distanceM, bool reverse, bool fullLap = false,
+                 size_t remainingStops = std::numeric_limits<size_t>::max());
+    bool JoinAt(location::GpsInfo const & fix, bool fresh);
+    std::optional<TrackSourcePosition> NearbyEntry(location::GpsInfo const & fix) const;
+
     FollowedTrackInfo m_info;
     std::shared_ptr<Track const> m_source;
     TrackSourcePosition m_entry;
-    size_t m_destinationLine;
+    size_t m_destinationLine = 0;
     // Reverse starts at m_entry or at the other endpoint of a loop. Empty when neither gives a route.
     std::optional<TrackSourcePosition> m_reverseEntry;
     std::shared_ptr<routing::TrackFollowingData const> m_data;
+    EntryOrigin m_entryOrigin = EntryOrigin::Selection;
+    // An endpoint may force the displayed direction until the next GPS join.
+    bool m_preferReverse = false;
+    std::optional<m2::PointD> m_previewPosition;
     bool m_keepViewport = false;
     bool m_startWhenReady = false;
   };

@@ -518,21 +518,17 @@ void RoutingManager::OnRoutePointPassed(RouteMarkType type, size_t intermediateI
 
 void RoutingManager::OnLocationUpdate(location::GpsInfo const & info)
 {
+  CHECK_THREAD_CHECKER(m_threadChecker, ());
   m_extrapolator.OnLocationUpdate(info);
+  if (info.IsValid() && IsPreviewingTrack() && !IsStartingFollowedTrack() &&
+      (m_followSession->m_entryOrigin == FollowSession::EntryOrigin::Selection || !m_followSession->m_previewPosition))
+    RefreshFollowedTrackPreview(info, false /* starting */);
 }
 
 void RoutingManager::OnLocationLost()
 {
   m_extrapolator.Reset();
   m_gpsInfoCache.reset();
-}
-
-std::optional<m2::PointD> RoutingManager::GetLatestGpsPosition() const
-{
-  auto const fix = m_extrapolator.GetLastGpsInfo();
-  if (!fix.IsValid())
-    return std::nullopt;
-  return mercator::FromLatLon(fix.GetLatLon());
 }
 
 RouterType RoutingManager::GetBestRouter(m2::PointD const & startPoint, m2::PointD const & finalPoint) const
@@ -945,8 +941,8 @@ void RoutingManager::FollowRoute()
 {
   if (IsFollowingTrack())
   {
-    auto const position = GetLatestGpsPosition();
-    if (!position)
+    auto const fix = m_extrapolator.GetLastGpsInfo();
+    if (!fix.IsValid())
       return;
     if (IsRouteBuilding())
     {
@@ -955,22 +951,10 @@ void RoutingManager::FollowRoute()
     }
     if (!IsRouteBuilt())
       return;
-    if (!IsRoutingFollowing())
+    if (!IsRoutingFollowing() && RefreshFollowedTrackPreview(fix, true /* starting */))
     {
-      auto const & route = *m_routingSession.GetRoute();
-      auto const & start = route.GetPoly().Front();
-      auto const vehicleType = RoutingOptions::GetVehicleType(m_followSession->m_info.m_profile).value();
-      auto const threshold = GetRoutingSettings(vehicleType).m_matchingThresholdM;
-      auto const entry = m_followSession->m_data->m_points.front().GetPoint();
-      bool const previewIsNear = *route.GetTrackStartDistanceMeters() <= threshold;
-      bool const startIsNear = mercator::DistanceOnEarth(*position, entry) <= threshold;
-      if (previewIsNear != startIsNear || mercator::DistanceOnEarth(start, *position) > threshold)
-      {
-        m_followSession->m_keepViewport = true;
-        m_followSession->m_startWhenReady = true;
-        BuildFollowedTrackPreview(position);
-        return;
-      }
+      m_followSession->m_startWhenReady = true;
+      return;
     }
   }
   if (!m_routingSession.EnableFollowMode())
@@ -1083,30 +1067,96 @@ void RoutingManager::CloseRouting(bool removeRoutePoints)
   }
 }
 
-FollowTrackResult RoutingManager::BuildFollowedTrack(std::shared_ptr<Track const> source, TrackSourcePosition entry,
-                                                     double entryDistanceM, bool reverse, RouterType profile,
-                                                     bool keepViewport)
+double RoutingManager::FollowSession::MatchingThresholdM() const
+{
+  return GetRoutingSettings(RoutingOptions::GetVehicleType(m_info.m_profile).value()).m_matchingThresholdM;
+}
+
+bool RoutingManager::FollowSession::Prepare(TrackSourcePosition entry, double distanceM, bool reverse, bool fullLap,
+                                            size_t remainingStops)
 {
   TrackSourcePosition destination;
-  auto prepared = BuildTrackFollowingData(source->GetData(), entry, reverse, &destination);
+  auto prepared = BuildTrackFollowingData(m_source->GetData(), entry, reverse, &destination);
   if (!prepared)
-    return FollowTrackResult::NoRemainingGeometry;
+    return false;
+  // Arrival tolerance can pass a stop just ahead of the confirmed position. Keep only the unpassed suffix on Back.
+  auto & stops = prepared->m_stopPointIndexes;
+  if (stops.size() > remainingStops)
+    stops.erase(stops.begin(), stops.end() - remainingStops);
+  m_data = std::make_shared<routing::TrackFollowingData const>(std::move(*prepared));
+  m_entry = entry;
+  m_destinationLine = destination.m_line;
+  m_reverseEntry = fullLap ? destination : GetReverseTrackEntry(*m_source, entry, destination);
+  m_info.m_entryDistanceM = distanceM;
+  m_info.m_reversed = reverse;
+  m_info.m_canReverse = m_reverseEntry.has_value();
+  m_info.m_endsAtGap =
+      reverse ? destination.m_line != 0 : destination.m_line + 1 < m_source->GetData().m_geometry.m_lines.size();
+  return true;
+}
 
-  FollowedTrackInfo info;
-  info.m_id = source->GetId();
-  info.m_name = source->GetName();
-  info.m_entryDistanceM = entryDistanceM;
-  info.m_reversed = reverse;
-  info.m_endsAtGap =
-      reverse ? destination.m_line != 0 : destination.m_line + 1 < source->GetData().m_geometry.m_lines.size();
-  auto const reverseEntry = GetReverseTrackEntry(*source, entry, destination);
-  info.m_canReverse = reverseEntry.has_value();
-  info.m_profile = profile;
+std::optional<TrackSourcePosition> RoutingManager::FollowSession::NearbyEntry(location::GpsInfo const & fix) const
+{
+  if (!fix.IsValid() || fix.m_horizontalAccuracy > MatchingThresholdM())
+    return std::nullopt;
+  return FindNearbyTrackEntry(*m_source, mercator::FromLatLon(fix.GetLatLon()), MatchingThresholdM());
+}
 
-  InstallFollowedTrack({std::move(info), std::move(source), entry, destination.m_line, reverseEntry,
-                        std::make_shared<routing::TrackFollowingData const>(std::move(*prepared))},
-                       keepViewport);
-  return FollowTrackResult::Ok;
+bool RoutingManager::FollowSession::JoinAt(location::GpsInfo const & fix, bool fresh)
+{
+  auto nearby = NearbyEntry(fix);
+  if (!nearby)
+    return false;
+  auto const point = mercator::FromLatLon(fix.GetLatLon());
+  auto const threshold = MatchingThresholdM();
+  if (auto const visit = ProjectSelectedTrackVisit(*m_source, m_entry, *nearby, threshold))
+    nearby = visit;
+  bool reverse = m_preferReverse;
+  auto const loop = fresh ? GetFreshLoopEntry(*m_source, *nearby, reverse, point, threshold) : std::nullopt;
+  auto const entry = loop.value_or(*nearby);
+  if (!HasRemainingTrackGeometry(m_source->GetData().m_geometry, entry, reverse))
+    reverse = !reverse;
+  if (!m_data || entry != m_entry || reverse != m_info.m_reversed ||
+      (loop && (!m_reverseEntry || m_reverseEntry == m_entry)))
+  {
+    if (!Prepare(entry, entry.GetDistanceMeters(*m_source), reverse, loop.has_value()))
+      return false;
+  }
+  m_entryOrigin = EntryOrigin::NearbyFix;
+  return true;
+}
+
+bool RoutingManager::RefreshFollowedTrackPreview(location::GpsInfo const & fix, bool starting)
+{
+  auto const position = mercator::FromLatLon(fix.GetLatLon());
+  auto & session = *m_followSession;
+  auto const threshold = session.MatchingThresholdM();
+  auto const entry = session.m_data->m_points.front().GetPoint();
+  auto const previous = session.m_previewPosition.value_or(entry);
+  bool const nearEntry = mercator::DistanceOnEarth(position, entry) <= threshold;
+  bool const moved = mercator::DistanceOnEarth(previous, position) > threshold;
+  bool joined = false;
+  if (session.m_entryOrigin == FollowSession::EntryOrigin::Selection ||
+      (starting && session.m_entryOrigin == FollowSession::EntryOrigin::NearbyFix && moved && !nearEntry))
+  {
+    auto const previousData = session.m_data;
+    joined = session.JoinAt(fix, session.m_entryOrigin == FollowSession::EntryOrigin::Selection);
+    if (previousData != session.m_data)
+    {
+      InstallFollowedTrack(session, true /* keepViewport */);
+      return true;
+    }
+  }
+  bool const approachChanged = nearEntry != (mercator::DistanceOnEarth(previous, entry) <= threshold);
+  if ((!session.m_previewPosition && position != entry) || ((starting || joined) && (moved || approachChanged)))
+  {
+    session.m_keepViewport = true;
+    BuildFollowedTrackPreview(position);
+    return true;
+  }
+  if (!session.m_previewPosition)
+    session.m_previewPosition = position;
+  return false;
 }
 
 void RoutingManager::InstallFollowedTrack(FollowSession session, bool keepViewport)
@@ -1129,12 +1179,14 @@ void RoutingManager::InstallFollowedTrack(FollowSession session, bool keepViewpo
   session.m_keepViewport = keepViewport;
   session.m_startWhenReady = false;
   m_followSession = std::move(session);
-  BuildFollowedTrackPreview(GetLatestGpsPosition());
+  auto const fix = m_extrapolator.GetLastGpsInfo();
+  BuildFollowedTrackPreview(fix.IsValid() ? std::optional(mercator::FromLatLon(fix.GetLatLon())) : std::nullopt);
 }
 
 void RoutingManager::BuildFollowedTrackPreview(std::optional<m2::PointD> const & position)
 {
   ASSERT(m_followSession, ());
+  m_followSession->m_previewPosition = position;
   std::vector<m2::PointD> checkpoints;
   checkpoints.reserve(m_followSession->m_data->m_stopPointIndexes.size() + 2);
   checkpoints.push_back(position.value_or(m_followSession->m_data->m_points.front().GetPoint()));
@@ -1161,7 +1213,23 @@ FollowTrackResult RoutingManager::ResetFollowedTrackToPlanning()
   CHECK_THREAD_CHECKER(m_threadChecker, ());
   if (auto const result = CheckFollowedTrackEditable(true /* allowFollowing */); result != FollowTrackResult::Ok)
     return result;
-  InstallFollowedTrack(*m_followSession);
+  auto session = *m_followSession;
+  if (IsRoutingFollowing())
+  {
+    auto const & route = *m_routingSession.GetRoute();
+    double const onTrackMerc = route.GetMercatorDistanceFromBegin() - route.GetSegmentStartDistanceMerc(1);
+    if (onTrackMerc > 0.0 || route.GetCurrentSubrouteIdx() > 0)
+    {
+      auto const entry = AdvanceTrackEntry(*session.m_source, session.m_entry, session.m_info.m_reversed, onTrackMerc);
+      auto const remainingStops = session.m_data->m_stopPointIndexes.size() - route.GetCurrentSubrouteIdx();
+      if (!session.Prepare(entry, entry.GetDistanceMeters(*session.m_source), session.m_info.m_reversed, false,
+                           remainingStops))
+        return FollowTrackResult::NoRemainingGeometry;
+    }
+    // While still on the approach, the captured entry and every unpassed stop remain ahead.
+    session.m_entryOrigin = FollowSession::EntryOrigin::Progress;
+  }
+  InstallFollowedTrack(std::move(session));
   return FollowTrackResult::Ok;
 }
 
@@ -1171,22 +1239,37 @@ FollowTrackResult RoutingManager::UpdateFollowedTrackEntryAt(double distanceM)
   if (auto const result = CheckFollowedTrackEditable(); result != FollowTrackResult::Ok)
     return result;
 
-  auto const & session = *m_followSession;
+  auto session = *m_followSession;
   distanceM = std::clamp(distanceM, 0.0, session.m_source->GetLengthMeters());
-  auto const entry = distanceM == session.m_info.m_entryDistanceM ? session.m_entry
-                                                                  : ResolveTrackEntryAt(*session.m_source, distanceM);
-  if (entry == session.m_entry)
+  auto entry = distanceM == session.m_info.m_entryDistanceM ? session.m_entry
+                                                            : ResolveTrackEntryAt(*session.m_source, distanceM);
+  auto const fix = m_extrapolator.GetLastGpsInfo();
+  if (auto const nearby = session.NearbyEntry(fix))
   {
-    auto updated = session;
-    updated.m_info.m_entryDistanceM = distanceM;
-    InstallFollowedTrack(std::move(updated), true /* keepViewport */);
-    return FollowTrackResult::Ok;
+    // Inspection is independent of the join. A chart pick at the join may select another visit.
+    if (entry == session.m_entry)
+      return FollowTrackResult::Ok;
+    auto const threshold = session.MatchingThresholdM();
+    auto const visit = ProjectSelectedTrackVisit(*session.m_source, entry, *nearby, threshold);
+    if (!visit || visit == ProjectSelectedTrackVisit(*session.m_source, session.m_entry, *nearby, threshold))
+      return FollowTrackResult::Ok;
+    entry = *visit;
+    distanceM = entry.GetDistanceMeters(*session.m_source);
+    session.m_entryOrigin = FollowSession::EntryOrigin::NearbyFix;
   }
-  bool reverse = session.m_info.m_reversed;
-  if (!HasRemainingTrackGeometry(session.m_source->GetData().m_geometry, entry, reverse))
-    reverse = !reverse;
-  return BuildFollowedTrack(session.m_source, entry, distanceM, reverse, session.m_info.m_profile,
-                            true /* keepViewport */);
+  else if (entry != session.m_entry)
+    session.m_entryOrigin = FollowSession::EntryOrigin::Selection;
+  if (entry != session.m_entry)
+  {
+    bool reverse = session.m_info.m_reversed;
+    if (!HasRemainingTrackGeometry(session.m_source->GetData().m_geometry, entry, reverse))
+      reverse = !reverse;
+    if (!session.Prepare(entry, distanceM, reverse))
+      return FollowTrackResult::NoRemainingGeometry;
+  }
+  session.m_info.m_entryDistanceM = distanceM;
+  InstallFollowedTrack(std::move(session), true /* keepViewport */);
+  return FollowTrackResult::Ok;
 }
 
 FollowTrackResult RoutingManager::ReverseFollowedTrack()
@@ -1197,14 +1280,17 @@ FollowTrackResult RoutingManager::ReverseFollowedTrack()
   if (!IsRouteBuilt())
     return FollowTrackResult::Busy;
 
-  auto const & session = *m_followSession;
+  auto session = *m_followSession;
   if (!session.m_reverseEntry)
     return FollowTrackResult::NoRemainingGeometry;
 
-  auto const & entry = *session.m_reverseEntry;
-  double const distance =
-      entry == session.m_entry ? session.m_info.m_entryDistanceM : entry.GetDistanceMeters(*session.m_source);
-  return BuildFollowedTrack(session.m_source, entry, distance, !session.m_info.m_reversed, session.m_info.m_profile);
+  auto const entry = *session.m_reverseEntry;
+  bool const fullLap = entry != session.m_entry;
+  double const distance = fullLap ? entry.GetDistanceMeters(*session.m_source) : session.m_info.m_entryDistanceM;
+  session.m_preferReverse = !session.m_info.m_reversed;
+  VERIFY(session.Prepare(entry, distance, session.m_preferReverse, fullLap), ());
+  InstallFollowedTrack(std::move(session));
+  return FollowTrackResult::Ok;
 }
 
 FollowTrackResult RoutingManager::SetFollowTrackProfile(RouterType type)
@@ -1215,6 +1301,8 @@ FollowTrackResult RoutingManager::SetFollowTrackProfile(RouterType type)
     return result;
   auto session = *m_followSession;
   session.m_info.m_profile = type;
+  if (session.m_entryOrigin == FollowSession::EntryOrigin::Selection)
+    session.JoinAt(m_extrapolator.GetLastGpsInfo(), true /* fresh */);
   InstallFollowedTrack(std::move(session));
   m_lastTrackProfile = type;
   return FollowTrackResult::Ok;
@@ -1237,12 +1325,21 @@ FollowTrackResult RoutingManager::NavigateTrack(kml::TrackId trackId)
     return FollowTrackResult::InvalidSelection;
 
   auto const & source = track->GetData();
-  bool const reverse = !HasRemainingTrackGeometry(source.m_geometry, *entry);
-
   auto const fallback = m_lastTrackProfile.value_or(m_currentRouterType);
-  auto const profile = GetFollowTrackRouterType(FromString(source.m_routerType, fallback));
-  return BuildFollowedTrack(std::make_shared<Track const>(kml::TrackData(source)), *entry, selection.m_distFromBegM,
-                            reverse, profile);
+  FollowSession session;
+  session.m_info.m_id = trackId;
+  session.m_info.m_name = track->GetName();
+  session.m_info.m_profile = GetFollowTrackRouterType(FromString(source.m_routerType, fallback));
+  session.m_source = std::make_shared<Track const>(kml::TrackData(source));
+  session.m_entry = *entry;
+  if (!session.JoinAt(m_extrapolator.GetLastGpsInfo(), true /* fresh */))
+  {
+    bool const reverse = !HasRemainingTrackGeometry(source.m_geometry, *entry);
+    if (!session.Prepare(*entry, selection.m_distFromBegM, reverse))
+      return FollowTrackResult::NoRemainingGeometry;
+  }
+  InstallFollowedTrack(std::move(session));
+  return FollowTrackResult::Ok;
 }
 
 void RoutingManager::SetLastUsedRouter(RouterType type)
