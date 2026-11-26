@@ -322,6 +322,11 @@ public class RoutingControllerRecoveryTest
       onMain(() -> {
         assertEquals(0.0, mController.getFollowedTrackInfo().getEntryDistanceMeters(), 0.0);
         sendLocation(51.308);
+        assertTrue(Framework.nativeIsRouteBuilding());
+        final boolean wasBuilding = mController.isBuilding();
+        assertEquals(FollowTrackResult.Ok, mController.updateFollowedTrackEntryAt(200.0));
+        assertEquals("Inspecting the chart must preserve the existing build state", wasBuilding,
+                     mController.isBuilding());
       });
       await(
           "The first nearby fix did not update the preview",
@@ -332,6 +337,31 @@ public class RoutingControllerRecoveryTest
         assertTrue(mController.isBuilt());
         assertTrue(Framework.nativeIsRouteBuilt());
         assertEquals(join, mController.getFollowedTrackInfo().getEntryDistanceMeters(), 0.0);
+      });
+    }
+  }
+
+  @Test
+  public void firstNearbyFixDuringOpeningBuildShowsTheTrackOverview() throws Exception
+  {
+    try (ImportedTrack track = new ImportedTrack("0,51.3,100 0,51.31,200");
+         ActivityScenario<MwmActivity> ignored = launchMap())
+    {
+      onMain(() -> {
+        sendLocation(51.29);
+        Framework.nativeStopLocationFollow();
+        Framework.nativeSetViewportCenter(50.0, 8.0, 14);
+      });
+      await("The map did not move away from the track",
+            () -> Math.abs(Framework.nativeGetScreenRectCenter()[1] - 8.0) < 0.01);
+      onMain(() -> {
+        assertEquals(FollowTrackResult.Ok, mController.navigateTrack(track.id));
+        assertTrue(Framework.nativeIsRouteBuilding());
+        sendLocation(51.308);
+      });
+      await("The opening overview did not frame the remaining track", () -> {
+        final double[] center = Framework.nativeGetScreenRectCenter();
+        return Framework.nativeIsRouteBuilt() && Math.abs(center[0] - 51.309) < 0.01 && Math.abs(center[1]) < 0.01;
       });
     }
   }

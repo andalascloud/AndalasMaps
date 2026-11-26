@@ -762,7 +762,8 @@ public class RoutingController
 
   /**
    * Selects an entry by distance along the full track. With a nearby fix, a pick at another location only inspects
-   * the chart. A pick at the join can distinguish overlapping visits.
+   * the chart and returns {@link FollowTrackResult#Ok} without starting a build. A pick at the join can distinguish
+   * overlapping visits.
    * Keeps the chosen direction unless only the opposite side of the entry has geometry.
    * Requires {@link #isFollowingTrack()}. Refusals leave the preview and selection unchanged.
    */
@@ -771,7 +772,9 @@ public class RoutingController
   {
     final FollowTrackResult result =
         FollowTrackResult.valueOf(Framework.nativeUpdateFollowedTrackEntryAt(distanceMeters));
-    if (result == FollowTrackResult.Ok && Framework.nativeIsRouteBuilding())
+    if (result == FollowTrackResult.Unchanged)
+      return FollowTrackResult.Ok;
+    if (result == FollowTrackResult.Ok)
       onCoreStartedTrackBuild();
     return result;
   }

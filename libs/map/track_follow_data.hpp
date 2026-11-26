@@ -18,11 +18,13 @@ std::optional<TrackSourcePosition> FindNearbyTrackEntry(Track const & track, m2:
 
 // Find the physical join near the selected source occurrence without crossing a section gap.
 std::optional<TrackSourcePosition> ProjectSelectedTrackVisit(Track const & track, TrackSourcePosition const & selection,
-                                                             TrackSourcePosition const & nearest, double thresholdM);
+                                                             TrackSourcePosition const & nearest,
+                                                             m2::PointD const & fix, double thresholdM);
 
 // Both ends of this section must be plausible visits, and the projection must be on a terminal portion.
 std::optional<TrackSourcePosition> GetFreshLoopEntry(Track const & track, TrackSourcePosition const & entry,
-                                                     bool reverse, m2::PointD const & fix, double thresholdM);
+                                                     TrackSourcePosition const & nearest, bool reverse,
+                                                     m2::PointD const & fix, double thresholdM);
 
 // Translate confirmed distance along the directed polyline back to the original source occurrence.
 // Mercator segment lengths are additive even where clipping or projected stops split a sparse edge.

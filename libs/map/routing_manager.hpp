@@ -94,6 +94,8 @@ enum class FollowTrackResult
   InvalidSelection,
   /// No horizontal geometry remains in the requested direction.
   NoRemainingGeometry,
+  /// Successful chart inspection. The current entry and any pending build are preserved.
+  Unchanged,
 };
 
 std::string DebugPrint(FollowTrackResult result);
@@ -222,7 +224,7 @@ public:
   // The following preview edits require a captured session.
   // Resume at confirmed progress with unpassed stops. NoRemainingGeometry at the exact finish.
   FollowTrackResult ResetFollowedTrackToPlanning();
-  // With nearby GPS, chart picks can distinguish visits at the join or inspect elsewhere without a build.
+  // With nearby GPS, a chart pick can distinguish visits at the join. Inspection returns Unchanged.
   // Otherwise clamp the requested source distance to the full track, preserving profile and viewport.
   // Keep the direction unless only the opposite side of the entry has geometry.
   // At a gap the exact accepted distance keeps its section. Other distances use source order.
@@ -383,7 +385,10 @@ private:
 
   void InstallFollowedTrack(FollowSession session, bool keepViewport = false);
   void BuildFollowedTrackPreview(std::optional<m2::PointD> const & position);
-  bool RefreshFollowedTrackPreview(location::GpsInfo const & fix, bool starting);
+  void OnFollowedTrackFix(location::GpsInfo const & fix);
+  bool RefreshFollowedTrackStart(location::GpsInfo const & fix);
+  bool TryJoinFollowedTrack(location::GpsInfo const & fix);
+  bool RefreshFollowedTrackApproach(m2::PointD const & position);
 
   struct RoadInfo
   {
@@ -464,12 +469,13 @@ private:
     {
       Selection,
       NearbyFix,
-      Progress
+      // Back retains the committed visit and unpassed stops, even when still approaching the entry.
+      Navigation
     };
     double MatchingThresholdM() const;
     bool Prepare(TrackSourcePosition entry, double distanceM, bool reverse, bool fullLap = false,
                  size_t remainingStops = std::numeric_limits<size_t>::max());
-    bool JoinAt(location::GpsInfo const & fix, bool fresh);
+    bool JoinAt(location::GpsInfo const & fix);
     std::optional<TrackSourcePosition> NearbyEntry(location::GpsInfo const & fix) const;
 
     FollowedTrackInfo m_info;
@@ -480,9 +486,10 @@ private:
     std::optional<TrackSourcePosition> m_reverseEntry;
     std::shared_ptr<routing::TrackFollowingData const> m_data;
     EntryOrigin m_entryOrigin = EntryOrigin::Selection;
-    // An endpoint may force the displayed direction until the next GPS join.
+    // Direction chosen with Reverse. GPS joins use it unless only the opposite direction has geometry.
     bool m_preferReverse = false;
     std::optional<m2::PointD> m_previewPosition;
+    // The pending build inherits this camera policy if GPS replaces it before it is shown.
     bool m_keepViewport = false;
     bool m_startWhenReady = false;
   };
